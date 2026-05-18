@@ -7,8 +7,8 @@ from typing import Any
 import torch
 from PIL import Image
 
-from nanovllm_omni.outputs import OmniOutput
-from nanovllm_omni.sampling_params import OmniSamplingParams
+from wllm_omni.outputs import OmniOutput
+from wllm_omni.sampling_params import OmniSamplingParams
 
 
 @dataclass(slots=True)

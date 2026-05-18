@@ -2,12 +2,12 @@ from pathlib import Path
 
 from PIL import Image
 
-from nanovllm_omni.config import DEFAULT_IMAGE, DEFAULT_MODEL, DEFAULT_PROMPT, EngineConfig
-from nanovllm_omni.engine.omni_engine import OmniEngine
-from nanovllm_omni.outputs import OmniOutput
-from nanovllm_omni.request import OmniRequest
-from nanovllm_omni.sampling_params import PRESETS, OmniSamplingParams, clone_sampling_params
-from nanovllm_omni.utils import save_video
+from wllm_omni.config import DEFAULT_IMAGE, DEFAULT_MODEL, DEFAULT_PROMPT, EngineConfig
+from wllm_omni.engine.omni_engine import OmniEngine
+from wllm_omni.outputs import OmniOutput
+from wllm_omni.request import OmniRequest
+from wllm_omni.sampling_params import PRESETS, OmniSamplingParams, clone_sampling_params
+from wllm_omni.utils import save_video
 
 
 class OmniLLM:

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from collections import deque
 
-from nanovllm_omni.request import OmniRequest
-from nanovllm_omni.sched.interface import (
+from wllm_omni.request import OmniRequest
+from wllm_omni.sched.interface import (
     CachedRequestData,
     DiffusionRequestState,
     DiffusionRequestStatus,

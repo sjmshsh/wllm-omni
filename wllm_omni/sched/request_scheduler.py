@@ -1,5 +1,5 @@
-from nanovllm_omni.sched.base_scheduler import BaseScheduler
-from nanovllm_omni.sched.interface import DiffusionRequestStatus, DiffusionSchedulerOutput
+from wllm_omni.sched.base_scheduler import BaseScheduler
+from wllm_omni.sched.interface import DiffusionRequestStatus, DiffusionSchedulerOutput
 
 
 class RequestScheduler(BaseScheduler):

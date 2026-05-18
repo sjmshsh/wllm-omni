@@ -3,7 +3,7 @@ import time
 
 from PIL import Image
 
-from nanovllm_omni import DEFAULT_IMAGE, DEFAULT_PROMPT, OmniLLM
+from wllm_omni import DEFAULT_IMAGE, DEFAULT_PROMPT, OmniLLM
 
 
 def main():

@@ -3,7 +3,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "nano-vllm-omni"
+name = "wllm-omni"
 version = "0.1.0"
 authors = [{ name = "OpenAI Codex" }]
 license = { text = "MIT" }
@@ -20,8 +20,8 @@ dependencies = [
 ]
 
 [project.scripts]
-nano-vllm-omni = "nanovllm_omni.cli:main"
+wllm-omni = "wllm_omni.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["nanovllm_omni*"]
+include = ["wllm_omni*"]

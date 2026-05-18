@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from nanovllm_omni.request import OmniRequest
-from nanovllm_omni.sched.base_scheduler import BaseScheduler
-from nanovllm_omni.sched.interface import DiffusionRequestState, DiffusionRequestStatus, DiffusionSchedulerOutput
+from wllm_omni.request import OmniRequest
+from wllm_omni.sched.base_scheduler import BaseScheduler
+from wllm_omni.sched.interface import DiffusionRequestState, DiffusionRequestStatus, DiffusionSchedulerOutput
 
 
 @dataclass(slots=True)

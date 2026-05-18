@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from nanovllm_omni.config import DEFAULT_NEGATIVE_PROMPT
+from wllm_omni.config import DEFAULT_NEGATIVE_PROMPT
 
 
 @dataclass(slots=True)

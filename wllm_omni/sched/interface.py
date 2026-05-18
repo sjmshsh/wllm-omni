@@ -5,7 +5,7 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from nanovllm_omni.request import OmniRequest
+from wllm_omni.request import OmniRequest
 
 
 class DiffusionRequestStatus(enum.IntEnum):

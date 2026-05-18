@@ -4,8 +4,8 @@ from uuid import uuid4
 
 from PIL import Image
 
-from nanovllm_omni.config import DEFAULT_IMAGE, DEFAULT_PROMPT
-from nanovllm_omni.sampling_params import OmniSamplingParams, PRESETS, clone_sampling_params
+from wllm_omni.config import DEFAULT_IMAGE, DEFAULT_PROMPT
+from wllm_omni.sampling_params import OmniSamplingParams, PRESETS, clone_sampling_params
 
 
 @dataclass(slots=True)

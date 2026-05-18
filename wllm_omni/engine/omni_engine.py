@@ -1,8 +1,8 @@
-from nanovllm_omni.config import EngineConfig
-from nanovllm_omni.engine.model_runner import ModelRunner
-from nanovllm_omni.outputs import OmniOutput
-from nanovllm_omni.request import OmniRequest
-from nanovllm_omni.sched.step_scheduler import StepScheduler
+from wllm_omni.config import EngineConfig
+from wllm_omni.engine.model_runner import ModelRunner
+from wllm_omni.outputs import OmniOutput
+from wllm_omni.request import OmniRequest
+from wllm_omni.sched.step_scheduler import StepScheduler
 
 
 class OmniEngine:

@@ -1,10 +1,10 @@
 import torch
 
-from nanovllm_omni.config import EngineConfig
-from nanovllm_omni.models import supports_step_execution
-from nanovllm_omni.models.wan22 import Wan22I2VPipeline
-from nanovllm_omni.sched.interface import DiffusionSchedulerOutput
-from nanovllm_omni.worker.utils import RunnerOutput, RunnerState
+from wllm_omni.config import EngineConfig
+from wllm_omni.models import supports_step_execution
+from wllm_omni.models.wan22 import Wan22I2VPipeline
+from wllm_omni.sched.interface import DiffusionSchedulerOutput
+from wllm_omni.worker.utils import RunnerOutput, RunnerState
 
 
 class ModelRunner:
@@ -19,7 +19,7 @@ class ModelRunner:
     def _get_or_create_state(self, scheduler_output: DiffusionSchedulerOutput) -> tuple[str, RunnerState, bool]:
         if scheduler_output.num_scheduled_reqs != 1:
             raise ValueError(
-                "nano-vllm-omni step execution currently supports exactly one scheduled request, "
+                "wllm-omni step execution currently supports exactly one scheduled request, "
                 f"got {scheduler_output.num_scheduled_reqs}."
             )
 

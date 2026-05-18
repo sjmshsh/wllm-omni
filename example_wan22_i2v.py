@@ -1,4 +1,4 @@
-from nanovllm_omni.cli import main
+from wllm_omni.cli import main
 
 
 if __name__ == "__main__":
