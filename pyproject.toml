@@ -1,9 +1,27 @@
 [build-system]
-requires = [
-    "ninja",
-    "packaging",
-    "setuptools",
-    "torch >= 2.0.0",
-    "wheel",
-]
+requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "nano-vllm-omni"
+version = "0.1.0"
+authors = [{ name = "OpenAI Codex" }]
+license = { text = "MIT" }
+readme = "README.md"
+description = "A lightweight omni inference playground for Wan2.2 TI2V-5B."
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "torch>=2.4.0",
+    "diffusers @ git+https://github.com/huggingface/diffusers.git@a5bc04696",
+    "transformers>=4.51.0",
+    "accelerate>=1.0.0",
+    "ftfy>=6.3.1",
+    "Pillow>=10.0.0",
+]
+
+[project.scripts]
+nano-vllm-omni = "nanovllm_omni.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["nanovllm_omni*"]
