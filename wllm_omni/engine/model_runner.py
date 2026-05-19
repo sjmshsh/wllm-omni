@@ -45,7 +45,7 @@ class ModelRunner:
     def execute_stepwise(self, scheduler_output: DiffusionSchedulerOutput) -> RunnerOutput:
         sched_req_id = "unknown"
         try:
-            with torch.inference_mode():
+            with torch.no_grad():
                 for finished_req_id in scheduler_output.finished_req_ids:
                     self.state_cache.pop(finished_req_id, None)
 
