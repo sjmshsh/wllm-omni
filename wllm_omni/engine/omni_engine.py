@@ -9,7 +9,7 @@ class OmniEngine:
 
     def __init__(self, config: EngineConfig):
         self.config = config
-        # The current teaching engine executes one step for one request at a time.
+        # The current diffusion executor still runs one request per forward batch.
         self.scheduler = StepScheduler(max_num_running_reqs=1)
         self.runner = ModelRunner(config)
 
@@ -26,12 +26,13 @@ class OmniEngine:
             if sched_output.is_empty:
                 break
 
-            runner_output = self.runner.execute_stepwise(sched_output)
+            runner_output = self.runner.execute(sched_output)
             finished_req_ids = self.scheduler.update_from_output(sched_output, runner_output)
             for finished_req_id in finished_req_ids:
                 self.scheduler.pop_request_state(finished_req_id)
 
-            if runner_output.result is not None:
-                outputs.append(runner_output.result)
+            for item in runner_output.outputs:
+                if item.result is not None:
+                    outputs.append(item.result)
 
         return outputs
