@@ -4,19 +4,18 @@ from collections import deque
 
 from wllm_omni.request import OmniRequest
 from wllm_omni.sched.interface import (
-    CachedRequestData,
-    DiffusionRequestState,
-    DiffusionRequestStatus,
-    DiffusionSchedulerOutput,
-    NewRequestData,
+    RequestStatus,
+    ScheduledRequest,
     SchedulerInterface,
+    SchedulerOutput,
+    SchedulerRequestState,
 )
 
 
 class BaseScheduler(SchedulerInterface):
 
     def __init__(self, max_num_running_reqs: int = 1):
-        self._request_states: dict[str, DiffusionRequestState] = {}
+        self._request_states: dict[str, SchedulerRequestState] = {}
         self._request_id_to_sched_req_id: dict[str, str] = {}
         self._step_id = 0
         self._waiting: deque[str] = deque()
@@ -26,20 +25,19 @@ class BaseScheduler(SchedulerInterface):
 
     def add_request(self, request: OmniRequest) -> str:
         sched_req_id = self._make_sched_req_id(request)
-        state = DiffusionRequestState(sched_req_id=sched_req_id, req=request)
+        state = SchedulerRequestState(sched_req_id=sched_req_id, req=request)
         self._request_states[sched_req_id] = state
         self._request_id_to_sched_req_id[request.request_id] = sched_req_id
         self._waiting.append(sched_req_id)
         return sched_req_id
 
-    def schedule(self) -> DiffusionSchedulerOutput:
-        scheduled_new_reqs: list[NewRequestData] = []
-        scheduled_cached_req_ids: list[str] = []
+    def schedule(self) -> SchedulerOutput:
+        scheduled_reqs: list[ScheduledRequest] = []
 
         for sched_req_id in self._running:
             state = self._request_states.get(sched_req_id)
             if state is not None:
-                scheduled_cached_req_ids.append(sched_req_id)
+                scheduled_reqs.append(ScheduledRequest.from_state(state, is_new=False))
 
         while self._waiting and len(self._running) < self.max_num_running_reqs:
             sched_req_id = self._waiting[0]
@@ -48,18 +46,14 @@ class BaseScheduler(SchedulerInterface):
                 self._waiting.popleft()
                 continue
             self._waiting.popleft()
-            was_new = state.status == DiffusionRequestStatus.WAITING
-            state.status = DiffusionRequestStatus.RUNNING
+            was_new = state.status == RequestStatus.WAITING
+            state.status = RequestStatus.RUNNING
             self._running.append(sched_req_id)
-            if was_new:
-                scheduled_new_reqs.append(NewRequestData.from_state(state))
-            else:
-                scheduled_cached_req_ids.append(sched_req_id)
+            scheduled_reqs.append(ScheduledRequest.from_state(state, is_new=was_new))
 
-        out = DiffusionSchedulerOutput(
+        out = SchedulerOutput(
             step_id=self._step_id,
-            scheduled_new_reqs=scheduled_new_reqs,
-            scheduled_cached_reqs=CachedRequestData(sched_req_ids=scheduled_cached_req_ids),
+            scheduled_reqs=scheduled_reqs,
             finished_req_ids=set(self._finished_req_ids),
             num_running_reqs=len(self._running),
             num_waiting_reqs=len(self._waiting),
@@ -71,13 +65,13 @@ class BaseScheduler(SchedulerInterface):
     def has_requests(self) -> bool:
         return bool(self._waiting or self._running)
 
-    def get_request_state(self, sched_req_id: str) -> DiffusionRequestState | None:
+    def get_request_state(self, sched_req_id: str) -> SchedulerRequestState | None:
         return self._request_states.get(sched_req_id)
 
     def get_sched_req_id(self, request_id: str) -> str | None:
         return self._request_id_to_sched_req_id.get(request_id)
 
-    def pop_request_state(self, sched_req_id: str) -> DiffusionRequestState | None:
+    def pop_request_state(self, sched_req_id: str) -> SchedulerRequestState | None:
         state = self._request_states.pop(sched_req_id, None)
         if state is not None and self._request_id_to_sched_req_id.get(state.req.request_id) == sched_req_id:
             self._request_id_to_sched_req_id.pop(state.req.request_id, None)
@@ -89,12 +83,12 @@ class BaseScheduler(SchedulerInterface):
         if sched_req_id in self._running:
             self._running.remove(sched_req_id)
             self._waiting.appendleft(sched_req_id)
-            self._request_states[sched_req_id].status = DiffusionRequestStatus.PREEMPTED
+            self._request_states[sched_req_id].status = RequestStatus.PREEMPTED
             return True
         return False
 
-    def finish_requests(self, sched_req_ids: str | list[str], status: DiffusionRequestStatus) -> None:
-        assert DiffusionRequestStatus.is_finished(status)
+    def finish_requests(self, sched_req_ids: str | list[str], status: RequestStatus) -> None:
+        assert RequestStatus.is_finished(status)
         if isinstance(sched_req_ids, str):
             sched_req_ids = [sched_req_ids]
         statuses = {sched_req_id: status for sched_req_id in sched_req_ids}
@@ -109,7 +103,7 @@ class BaseScheduler(SchedulerInterface):
 
     def _finish_requests(
         self,
-        statuses: dict[str, DiffusionRequestStatus],
+        statuses: dict[str, RequestStatus],
         errors: dict[str, str | None] | None = None,
     ) -> set[str]:
         if not statuses:
@@ -139,8 +133,8 @@ class BaseScheduler(SchedulerInterface):
 
     def _finalize_update_from_output(
         self,
-        sched_output: DiffusionSchedulerOutput,
-        statuses: dict[str, DiffusionRequestStatus],
+        sched_output: SchedulerOutput,
+        statuses: dict[str, RequestStatus],
         errors: dict[str, str | None] | None = None,
     ) -> set[str]:
         finished_req_ids = {

@@ -1,0 +1,143 @@
+from __future__ import annotations
+
+from wllm_omni.models import ModelExecutor, supports_step_execution
+from wllm_omni.models.wan22 import Wan22I2VPipeline
+from wllm_omni.request import OmniRequest
+from wllm_omni.worker.utils import (
+    ForwardBatch,
+    ModelForwardOutput,
+    ModelParadigm,
+    RequestState,
+    RunnerOutput,
+    RunnerState,
+)
+
+
+class DiffusionExecutor(ModelExecutor):
+    """Step-wise diffusion executor used by the generic ModelRunner V1.
+
+    The executor owns diffusion-specific state and model calls. The generic
+    runner only sees RequestState and ForwardBatch.
+    """
+
+    paradigm = ModelParadigm.DIFFUSION
+
+    def __init__(self, pipeline: Wan22I2VPipeline):
+        self.pipeline = pipeline
+        if not supports_step_execution(self.pipeline):
+            raise TypeError(f"{self.pipeline.__class__.__name__} does not implement the step execution contract.")
+
+    def init_state(self, sched_req_id: str, request: OmniRequest) -> RequestState:
+        payload = RunnerState(
+            req_id=request.request_id,
+            sampling=request.sampling_params,
+            prompt=request.prompt,
+            image=request.image,
+            negative_prompt=request.sampling_params.negative_prompt,
+        )
+        return RequestState(
+            req_id=request.request_id,
+            sched_req_id=sched_req_id,
+            paradigm=self.paradigm,
+            payload=payload,
+        )
+
+    def batch_key(self, state: RequestState) -> tuple:
+        payload = self._payload(state)
+        sampling = payload.sampling
+        return (
+            self.paradigm.value,
+            sampling.height,
+            sampling.width,
+            sampling.num_frames,
+            sampling.num_inference_steps,
+            sampling.guidance_scale,
+            sampling.flow_shift,
+            sampling.negative_prompt,
+            sampling.fps,
+            payload.step_index,
+            state.sched_req_id,
+        )
+
+    def build_forward_batch(self, states: list[RequestState]) -> ForwardBatch:
+        if len(states) != 1:
+            raise ValueError(f"DiffusionExecutor V1 supports exactly one request per forward batch, got {len(states)}.")
+        state = states[0]
+        payload = self._payload(state)
+        mode = "init" if not state.initialized else "denoise"
+        if payload.denoise_completed:
+            mode = "finalize"
+        return ForwardBatch(paradigm=self.paradigm, req_ids=[state.sched_req_id], mode=mode, payload=payload)
+
+    def forward(self, batch: ForwardBatch) -> ModelForwardOutput:
+        if batch.paradigm != self.paradigm:
+            raise ValueError(f"DiffusionExecutor cannot run batch for paradigm={batch.paradigm}.")
+        if len(batch.req_ids) != 1:
+            raise ValueError(f"DiffusionExecutor V1 supports exactly one request per forward batch, got {len(batch.req_ids)}.")
+
+        payload = self._batch_payload(batch)
+        if batch.mode == "init":
+            payload = self.pipeline.prepare_encode(payload)
+
+        if not payload.denoise_completed:
+            noise_pred = self.pipeline.denoise_step(payload)
+            self.pipeline.step_scheduler(payload, noise_pred)
+
+        req_id = batch.req_ids[0]
+        if payload.denoise_completed:
+            result = self.pipeline.post_decode(payload)
+            return ModelForwardOutput(
+                outputs=[
+                    RunnerOutput(
+                        req_id=req_id,
+                        step_index=payload.step_index,
+                        finished=True,
+                        result=result,
+                    )
+                ],
+                payload=payload,
+            )
+
+        return ModelForwardOutput(
+            outputs=[RunnerOutput(req_id=req_id, step_index=payload.step_index, finished=False)],
+            payload=payload,
+        )
+
+    def update_states(self, states: list[RequestState], output: ModelForwardOutput) -> None:
+        output_by_req_id = {item.req_id: item for item in output.outputs}
+        for state in states:
+            item = output_by_req_id.get(state.sched_req_id)
+            if item is None:
+                continue
+            if output.payload is not None:
+                state.payload = output.payload
+                state.initialized = True
+            if item.error is not None:
+                state.error = item.error
+                state.finished = True
+            if item.step_index is not None:
+                state.step_index = item.step_index
+            if item.finished:
+                state.finished = True
+
+    def collect_outputs(
+        self,
+        states: list[RequestState],
+        output: ModelForwardOutput,
+    ) -> list[RunnerOutput]:
+        return output.outputs
+
+    def release(self, state: RequestState) -> None:
+        state.payload = None
+
+    @staticmethod
+    def _payload(state: RequestState) -> RunnerState:
+        if not isinstance(state.payload, RunnerState):
+            raise TypeError(f"Expected RunnerState payload, got {type(state.payload).__name__}.")
+        return state.payload
+
+    @staticmethod
+    def _batch_payload(batch: ForwardBatch) -> RunnerState:
+        if not isinstance(batch.payload, RunnerState):
+            raise TypeError(f"Expected RunnerState batch payload, got {type(batch.payload).__name__}.")
+        return batch.payload

@@ -5,6 +5,7 @@ from uuid import uuid4
 from PIL import Image
 
 from wllm_omni.config import DEFAULT_IMAGE, DEFAULT_PROMPT
+from wllm_omni.model_types import ModelParadigm
 from wllm_omni.sampling_params import OmniSamplingParams, PRESETS, clone_sampling_params
 
 
@@ -13,6 +14,7 @@ class OmniRequest:
     prompt: str = DEFAULT_PROMPT
     image: str | Path | Image.Image = DEFAULT_IMAGE
     sampling_params: OmniSamplingParams = field(default_factory=lambda: clone_sampling_params(PRESETS["quality"]))
+    model_paradigm: ModelParadigm = ModelParadigm.DIFFUSION
     request_id: str = field(default_factory=lambda: uuid4().hex)
 
     @property

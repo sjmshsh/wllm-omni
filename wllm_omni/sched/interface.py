@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from wllm_omni.request import OmniRequest
 
 
-class DiffusionRequestStatus(enum.IntEnum):
+class RequestStatus(enum.IntEnum):
     WAITING = enum.auto()
     RUNNING = enum.auto()
     PREEMPTED = enum.auto()
@@ -17,19 +17,34 @@ class DiffusionRequestStatus(enum.IntEnum):
     FINISHED_ERROR = enum.auto()
 
     @staticmethod
-    def is_finished(status: "DiffusionRequestStatus") -> bool:
-        return status >= DiffusionRequestStatus.FINISHED_COMPLETED
+    def is_finished(status: "RequestStatus") -> bool:
+        return status >= RequestStatus.FINISHED_COMPLETED
 
 
 @dataclass(slots=True)
-class DiffusionRequestState:
+class SchedulerRequestState:
     sched_req_id: str
     req: OmniRequest
-    status: DiffusionRequestStatus = DiffusionRequestStatus.WAITING
+    status: RequestStatus = RequestStatus.WAITING
     error: str | None = None
 
     def is_finished(self) -> bool:
-        return DiffusionRequestStatus.is_finished(self.status)
+        return RequestStatus.is_finished(self.status)
+
+
+@dataclass(slots=True)
+class ScheduledRequest:
+    sched_req_id: str
+    req: OmniRequest | None = None
+    is_new: bool = False
+
+    @classmethod
+    def from_state(cls, state: SchedulerRequestState, is_new: bool) -> "ScheduledRequest":
+        return cls(
+            sched_req_id=state.sched_req_id,
+            req=state.req if is_new else None,
+            is_new=is_new,
+        )
 
 
 @dataclass(slots=True)
@@ -38,7 +53,7 @@ class NewRequestData:
     req: OmniRequest
 
     @classmethod
-    def from_state(cls, state: DiffusionRequestState) -> "NewRequestData":
+    def from_state(cls, state: SchedulerRequestState) -> "NewRequestData":
         return cls(sched_req_id=state.sched_req_id, req=state.req)
 
 
@@ -52,28 +67,48 @@ class CachedRequestData:
 
 
 @dataclass(slots=True)
-class DiffusionSchedulerOutput:
+class SchedulerOutput:
     step_id: int
-    scheduled_new_reqs: list[NewRequestData]
-    scheduled_cached_reqs: CachedRequestData
+    scheduled_reqs: list[ScheduledRequest]
     finished_req_ids: set[str]
     num_running_reqs: int
     num_waiting_reqs: int
 
     @property
     def scheduled_req_ids(self) -> list[str]:
+        return [req.sched_req_id for req in self.scheduled_reqs]
+
+    @property
+    def scheduled_entries(self) -> list[ScheduledRequest]:
+        return self.scheduled_reqs
+
+    @property
+    def scheduled_new_reqs(self) -> list[NewRequestData]:
         return [
-            *(req.sched_req_id for req in self.scheduled_new_reqs),
-            *self.scheduled_cached_reqs.sched_req_ids,
+            NewRequestData(sched_req_id=req.sched_req_id, req=req.req)
+            for req in self.scheduled_reqs
+            if req.is_new and req.req is not None
         ]
 
     @property
+    def scheduled_cached_reqs(self) -> CachedRequestData:
+        return CachedRequestData(
+            sched_req_ids=[req.sched_req_id for req in self.scheduled_reqs if not req.is_new]
+        )
+
+    @property
     def is_empty(self) -> bool:
-        return len(self.scheduled_req_ids) == 0
+        return len(self.scheduled_reqs) == 0
 
     @property
     def num_scheduled_reqs(self) -> int:
-        return len(self.scheduled_req_ids)
+        return len(self.scheduled_reqs)
+
+
+# Backward-compatible aliases. Prefer the generic names above in new code.
+DiffusionRequestStatus = RequestStatus
+DiffusionRequestState = SchedulerRequestState
+DiffusionSchedulerOutput = SchedulerOutput
 
 
 class SchedulerInterface(ABC):
@@ -92,15 +127,15 @@ class SchedulerInterface(ABC):
         pass
 
     @abstractmethod
-    def schedule(self) -> DiffusionSchedulerOutput:
+    def schedule(self) -> SchedulerOutput:
         pass
 
     @abstractmethod
-    def update_from_output(self, sched_output: DiffusionSchedulerOutput, output) -> set[str]:
+    def update_from_output(self, sched_output: SchedulerOutput, output) -> set[str]:
         pass
 
     @abstractmethod
-    def get_request_state(self, sched_req_id: str) -> DiffusionRequestState | None:
+    def get_request_state(self, sched_req_id: str) -> SchedulerRequestState | None:
         pass
 
     @abstractmethod
@@ -112,7 +147,7 @@ class SchedulerInterface(ABC):
         pass
 
     @abstractmethod
-    def pop_request_state(self, sched_req_id: str) -> DiffusionRequestState | None:
+    def pop_request_state(self, sched_req_id: str) -> SchedulerRequestState | None:
         pass
 
     @abstractmethod
@@ -120,7 +155,7 @@ class SchedulerInterface(ABC):
         pass
 
     @abstractmethod
-    def finish_requests(self, sched_req_ids: str | list[str], status: DiffusionRequestStatus) -> None:
+    def finish_requests(self, sched_req_ids: str | list[str], status: RequestStatus) -> None:
         pass
 
     @abstractmethod

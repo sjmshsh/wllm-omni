@@ -7,12 +7,36 @@ from typing import Any
 import torch
 from PIL import Image
 
+from wllm_omni.model_types import ModelParadigm
 from wllm_omni.outputs import OmniOutput
 from wllm_omni.sampling_params import OmniSamplingParams
 
 
 @dataclass(slots=True)
+class RequestState:
+    req_id: str
+    sched_req_id: str
+    paradigm: ModelParadigm
+    payload: Any
+    step_index: int = 0
+    initialized: bool = False
+    finished: bool = False
+    error: str | None = None
+    extra: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class ForwardBatch:
+    paradigm: ModelParadigm
+    req_ids: list[str]
+    mode: str
+    payload: Any = None
+
+
+@dataclass(slots=True)
 class RunnerState:
+    """Diffusion step state used by the current Wan executor."""
+
     req_id: str
     sampling: OmniSamplingParams
     prompt: str
@@ -50,3 +74,23 @@ class RunnerOutput:
     finished: bool = False
     result: OmniOutput | None = None
     error: str | None = None
+
+
+@dataclass(slots=True)
+class ModelForwardOutput:
+    outputs: list[RunnerOutput] = field(default_factory=list)
+    payload: Any = None
+
+
+@dataclass(slots=True)
+class RunnerBatchOutput:
+    outputs: list[RunnerOutput] = field(default_factory=list)
+
+    @property
+    def is_empty(self) -> bool:
+        return len(self.outputs) == 0
+
+    def to_single(self) -> RunnerOutput:
+        if len(self.outputs) != 1:
+            raise ValueError(f"Expected exactly one runner output, got {len(self.outputs)}.")
+        return self.outputs[0]
