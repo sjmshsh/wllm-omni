@@ -15,6 +15,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--disable-cpu-offload", action="store_true")
     parser.add_argument("--max-num-seqs", type=int, default=2)
+    parser.add_argument("--profile", action="store_true", help="Print a per-request diffusion profiler summary.")
     return parser.parse_args()
 
 
@@ -24,6 +25,7 @@ def main():
         args.model,
         use_cpu_offload=not args.disable_cpu_offload,
         max_num_seqs=args.max_num_seqs,
+        enable_profiling=args.profile,
     )
     sampling_params = llm.preset(args.preset)
     if args.seed is not None:

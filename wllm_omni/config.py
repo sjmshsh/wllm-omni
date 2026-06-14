@@ -29,8 +29,10 @@ class EngineConfig:
     model: str = DEFAULT_MODEL
     device: str = "cuda"
     dtype: torch.dtype = torch.bfloat16
-    vae_dtype: torch.dtype = torch.bfloat16
+    # Wan VAE stays in fp32 by default for decode stability.
+    vae_dtype: torch.dtype = torch.float32
     local_files_only: bool = True
     use_cpu_offload: bool = True
     max_num_seqs: int = 2
     prompt_cache_size: int = 8
+    enable_profiling: bool = False
