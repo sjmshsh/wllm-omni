@@ -35,4 +35,5 @@ class EngineConfig:
     use_cpu_offload: bool = True
     max_num_seqs: int = 2
     prompt_cache_size: int = 8
+    image_cache_size: int = 4
     enable_profiling: bool = False

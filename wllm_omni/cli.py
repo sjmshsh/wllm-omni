@@ -1,6 +1,8 @@
 import argparse
 from pathlib import Path
 
+import torch
+
 from wllm_omni import DEFAULT_IMAGE, DEFAULT_MODEL, DEFAULT_NEGATIVE_PROMPT, DEFAULT_PROMPT, OmniLLM
 
 
@@ -16,7 +18,21 @@ def parse_args():
     parser.add_argument("--disable-cpu-offload", action="store_true")
     parser.add_argument("--max-num-seqs", type=int, default=2)
     parser.add_argument("--profile", action="store_true", help="Print a per-request diffusion profiler summary.")
+    parser.add_argument(
+        "--vae-dtype",
+        choices=["fp32", "bf16"],
+        default="fp32",
+        help="VAE load/decode dtype. fp32 is the stable default; bf16 can be profiled as an experimental speed policy.",
+    )
     return parser.parse_args()
+
+
+def _parse_vae_dtype(value: str) -> torch.dtype:
+    if value == "fp32":
+        return torch.float32
+    if value == "bf16":
+        return torch.bfloat16
+    raise ValueError(f"Unsupported VAE dtype: {value}")
 
 
 def main():
@@ -26,6 +42,7 @@ def main():
         use_cpu_offload=not args.disable_cpu_offload,
         max_num_seqs=args.max_num_seqs,
         enable_profiling=args.profile,
+        vae_dtype=_parse_vae_dtype(args.vae_dtype),
     )
     sampling_params = llm.preset(args.preset)
     if args.seed is not None:

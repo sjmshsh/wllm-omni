@@ -7,7 +7,7 @@ import torch
 from diffusers import AutoencoderKLWan, UniPCMultistepScheduler, WanImageToVideoPipeline
 from PIL import Image
 
-from wllm_omni.cache import PromptCache
+from wllm_omni.cache import PromptCache, TensorCache
 from wllm_omni.config import EngineConfig
 from wllm_omni.outputs import OmniOutput
 from wllm_omni.profiler import RequestProfiler
@@ -27,6 +27,7 @@ class Wan22I2VPipeline:
     def __init__(self, config: EngineConfig):
         self.config = config
         self.prompt_cache = PromptCache(config.prompt_cache_size)
+        self.image_cache = TensorCache(config.image_cache_size)
         vae = AutoencoderKLWan.from_pretrained(
             config.model,
             subfolder="vae",
@@ -48,6 +49,15 @@ class Wan22I2VPipeline:
         if isinstance(image, (str, Path)):
             return Image.open(image).convert("RGB")
         return image.convert("RGB")
+
+    def _image_cache_key(self, image: str | Path | Image.Image, height: int, width: int) -> tuple:
+        if isinstance(image, (str, Path)):
+            path = Path(image).expanduser().resolve()
+            stat = path.stat()
+            image_key = ("path", str(path), stat.st_mtime_ns, stat.st_size)
+        else:
+            image_key = ("pil", id(image))
+        return (image_key, height, width)
 
     def _align_resolution(self, height: int, width: int) -> tuple[int, int]:
         pipe = self.pipe
@@ -160,11 +170,22 @@ class Wan22I2VPipeline:
             with self.profile_stage(state, "prepare.prompt_cache_put"):
                 self.prompt_cache.put(cache_key, (state.prompt_embeds, state.negative_prompt_embeds))
 
-        with self.profile_stage(state, "prepare.image_preprocess"):
+        with self.profile_stage(state, "prepare.image_cache_lookup"):
+            image_cache_key = self._image_cache_key(state.image, height, width)
+            cached_image_tensor = self.image_cache.get(image_cache_key)
+        state.extra["image_cache_hit"] = cached_image_tensor is not None
+        if cached_image_tensor is not None:
+            with self.profile_stage(state, "prepare.image_cache_restore"):
+                image_tensor = cached_image_tensor.to(device, dtype=torch.float32)
+        else:
+            with self.profile_stage(state, "prepare.image_preprocess"):
+                image_tensor = pipe.video_processor.preprocess(image, height=height, width=width).to(
+                    device, dtype=torch.float32
+                )
+            with self.profile_stage(state, "prepare.image_cache_put"):
+                self.image_cache.put(image_cache_key, image_tensor)
+        with self.profile_stage(state, "prepare.generator"):
             generator = torch.Generator(device=device).manual_seed(sampling.seed)
-            image_tensor = pipe.video_processor.preprocess(image, height=height, width=width).to(
-                device, dtype=torch.float32
-            )
 
         with self.profile_stage(state, "prepare.latents"):
             latents_outputs = pipe.prepare_latents(

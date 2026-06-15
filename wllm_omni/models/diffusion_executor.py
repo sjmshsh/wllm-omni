@@ -186,6 +186,7 @@ class DiffusionExecutor(ModelExecutor):
             num_frames=state.extra.get("num_frames"),
             guidance_scale=state.extra.get("guidance_scale"),
             prompt_cache_hit=state.extra.get("prompt_cache_hit"),
+            image_cache_hit=state.extra.get("image_cache_hit"),
             **self.pipeline.runtime_info(),
         )
         if self.pipeline.config.use_cpu_offload:

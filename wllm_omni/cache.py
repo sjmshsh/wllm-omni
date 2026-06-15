@@ -26,3 +26,26 @@ class PromptCache:
         self._items.move_to_end(key)
         while len(self._items) > self.capacity:
             self._items.popitem(last=False)
+
+
+class TensorCache:
+
+    def __init__(self, capacity: int):
+        self.capacity = capacity
+        self._items: OrderedDict[tuple, torch.Tensor] = OrderedDict()
+
+    def get(self, key: tuple) -> torch.Tensor | None:
+        value = self._items.get(key)
+        if value is None:
+            return None
+        self._items.move_to_end(key)
+        return value.clone()
+
+    def put(self, key: tuple, value: torch.Tensor) -> None:
+        if self.capacity <= 0:
+            return
+        self._items[key] = value.detach().cpu()
+        self._items.move_to_end(key)
+        while len(self._items) > self.capacity:
+            self._items.popitem(last=False)
+
