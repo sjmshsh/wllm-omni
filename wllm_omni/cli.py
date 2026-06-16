@@ -24,6 +24,11 @@ def parse_args():
         default="fp32",
         help="VAE load/decode dtype. fp32 is the stable default; bf16 can be profiled as an experimental speed policy.",
     )
+    parser.add_argument(
+        "--probe-condition-cache",
+        action="store_true",
+        help="Run an extra prepare_latents probe to check whether Wan condition tensors are seed-independent.",
+    )
     return parser.parse_args()
 
 
@@ -43,6 +48,7 @@ def main():
         max_num_seqs=args.max_num_seqs,
         enable_profiling=args.profile,
         vae_dtype=_parse_vae_dtype(args.vae_dtype),
+        probe_condition_cache=args.probe_condition_cache,
     )
     sampling_params = llm.preset(args.preset)
     if args.seed is not None:

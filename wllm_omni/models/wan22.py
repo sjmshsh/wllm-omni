@@ -5,9 +5,10 @@ from pathlib import Path
 
 import torch
 from diffusers import AutoencoderKLWan, UniPCMultistepScheduler, WanImageToVideoPipeline
+from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
 
-from wllm_omni.cache import PromptCache, TensorCache
+from wllm_omni.cache import ConditionCache, PromptCache, TensorCache
 from wllm_omni.config import EngineConfig
 from wllm_omni.outputs import OmniOutput
 from wllm_omni.profiler import RequestProfiler
@@ -24,10 +25,25 @@ class Wan22I2VPipeline:
         # reusing inference-mode tensors in later autograd-tracked forward passes.
         return tensor.clone()
 
+    @staticmethod
+    def _same_tensor(left: torch.Tensor | None, right: torch.Tensor | None) -> bool | None:
+        if left is None or right is None:
+            return left is right
+        if left.shape != right.shape or left.dtype != right.dtype:
+            return False
+        return bool(torch.equal(left.detach().cpu(), right.detach().cpu()))
+
+    @staticmethod
+    def _shape_text(tensor: torch.Tensor | None) -> str | None:
+        if tensor is None:
+            return None
+        return "x".join(str(dim) for dim in tensor.shape)
+
     def __init__(self, config: EngineConfig):
         self.config = config
         self.prompt_cache = PromptCache(config.prompt_cache_size)
         self.image_cache = TensorCache(config.image_cache_size)
+        self.condition_cache = ConditionCache(config.condition_cache_size)
         vae = AutoencoderKLWan.from_pretrained(
             config.model,
             subfolder="vae",
@@ -50,14 +66,53 @@ class Wan22I2VPipeline:
             return Image.open(image).convert("RGB")
         return image.convert("RGB")
 
-    def _image_cache_key(self, image: str | Path | Image.Image, height: int, width: int) -> tuple:
+    def _image_identity_key(self, image: str | Path | Image.Image) -> tuple:
         if isinstance(image, (str, Path)):
             path = Path(image).expanduser().resolve()
             stat = path.stat()
-            image_key = ("path", str(path), stat.st_mtime_ns, stat.st_size)
-        else:
-            image_key = ("pil", id(image))
-        return (image_key, height, width)
+            return ("path", str(path), stat.st_mtime_ns, stat.st_size)
+        return ("pil", id(image))
+
+    def _image_cache_key(self, image: str | Path | Image.Image, height: int, width: int) -> tuple:
+        return (self._image_identity_key(image), height, width)
+
+    def _condition_cache_key(self, image: str | Path | Image.Image, height: int, width: int, num_frames: int) -> tuple:
+        pipe = self.pipe
+        return (
+            self._image_identity_key(image),
+            height,
+            width,
+            num_frames,
+            self._dtype_name(self.config.vae_dtype),
+            bool(pipe.config.expand_timesteps),
+            pipe.vae_scale_factor_temporal,
+            pipe.vae_scale_factor_spatial,
+            pipe.vae.config.z_dim,
+        )
+
+    def _prepare_noise_latents(
+        self,
+        batch_size: int,
+        num_channels_latents: int,
+        height: int,
+        width: int,
+        num_frames: int,
+        dtype: torch.dtype,
+        device: torch.device,
+        generator: torch.Generator | list[torch.Generator] | None,
+    ) -> torch.Tensor:
+        pipe = self.pipe
+        if isinstance(generator, list) and len(generator) != batch_size:
+            raise ValueError(
+                f"You have passed a list of generators of length {len(generator)}, but requested an effective batch "
+                f"size of {batch_size}. Make sure the batch size matches the length of the generators."
+            )
+
+        num_latent_frames = (num_frames - 1) // pipe.vae_scale_factor_temporal + 1
+        latent_height = height // pipe.vae_scale_factor_spatial
+        latent_width = width // pipe.vae_scale_factor_spatial
+        shape = (batch_size, num_channels_latents, num_latent_frames, latent_height, latent_width)
+        return randn_tensor(shape, generator=generator, device=device, dtype=dtype)
 
     def _align_resolution(self, height: int, width: int) -> tuple[int, int]:
         pipe = self.pipe
@@ -124,6 +179,189 @@ class Wan22I2VPipeline:
             raise TypeError(f"Expected RequestProfiler payload, got {type(profile).__name__}.")
         return profile.stage(name, self._profile_sync)
 
+    def _prepare_prompt_embeds(self, state: RunnerState, device: torch.device) -> None:
+        pipe = self.pipe
+        sampling = state.sampling
+
+        with self.profile_stage(state, "prepare.prompt_cache_lookup"):
+            cache_key = (state.prompt, state.negative_prompt)
+            cached = self.prompt_cache.get(cache_key)
+        state.extra["prompt_cache_hit"] = cached is not None
+        if cached is not None:
+            with self.profile_stage(state, "prepare.prompt_cache_restore"):
+                state.prompt_embeds, state.negative_prompt_embeds = cached
+            return
+
+        with self.profile_stage(state, "prepare.prompt_encode"):
+            prompt_embeds, negative_prompt_embeds = pipe.encode_prompt(
+                prompt=state.prompt,
+                negative_prompt=state.negative_prompt,
+                do_classifier_free_guidance=sampling.guidance_scale > 1.0,
+                num_videos_per_prompt=1,
+                max_sequence_length=512,
+                device=device,
+            )
+        with self.profile_stage(state, "prepare.prompt_to_dtype"):
+            transformer_dtype = pipe.transformer.dtype
+            state.prompt_embeds = prompt_embeds.to(transformer_dtype)
+            state.negative_prompt_embeds = (
+                None if negative_prompt_embeds is None else negative_prompt_embeds.to(transformer_dtype)
+            )
+        with self.profile_stage(state, "prepare.prompt_cache_put"):
+            self.prompt_cache.put(cache_key, (state.prompt_embeds, state.negative_prompt_embeds))
+
+    def _prepare_image_tensor(
+        self,
+        state: RunnerState,
+        image: Image.Image,
+        height: int,
+        width: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        pipe = self.pipe
+
+        with self.profile_stage(state, "prepare.image_cache_lookup"):
+            image_cache_key = self._image_cache_key(state.image, height, width)
+            cached_image_tensor = self.image_cache.get(image_cache_key)
+        state.extra["image_cache_hit"] = cached_image_tensor is not None
+        if cached_image_tensor is not None:
+            with self.profile_stage(state, "prepare.image_cache_restore"):
+                return cached_image_tensor.to(device, dtype=torch.float32)
+
+        with self.profile_stage(state, "prepare.image_preprocess"):
+            image_tensor = pipe.video_processor.preprocess(image, height=height, width=width).to(
+                device, dtype=torch.float32
+            )
+        with self.profile_stage(state, "prepare.image_cache_put"):
+            self.image_cache.put(image_cache_key, image_tensor)
+        return image_tensor
+
+    def _prepare_latents_and_condition(
+        self,
+        state: RunnerState,
+        image_tensor: torch.Tensor,
+        height: int,
+        width: int,
+        num_frames: int,
+        device: torch.device,
+        generator: torch.Generator,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+        pipe = self.pipe
+
+        with self.profile_stage(state, "prepare.condition_cache_lookup"):
+            condition_cache_key = self._condition_cache_key(state.image, height, width, num_frames)
+            cached_condition = self.condition_cache.get(condition_cache_key)
+        condition_cache_hit = cached_condition is not None
+        state.extra["condition_cache_hit"] = condition_cache_hit
+
+        if condition_cache_hit:
+            state.extra["condition_cache_mode"] = "hit_latents_only"
+            with self.profile_stage(state, "prepare.latents_noise"):
+                latents = self._prepare_noise_latents(
+                    batch_size=1,
+                    num_channels_latents=pipe.vae.config.z_dim,
+                    height=height,
+                    width=width,
+                    num_frames=num_frames,
+                    dtype=torch.float32,
+                    device=device,
+                    generator=generator,
+                )
+            with self.profile_stage(state, "prepare.condition_cache_restore"):
+                condition, first_frame_mask = cached_condition
+                condition = condition.to(device, dtype=condition.dtype)
+                if first_frame_mask is not None:
+                    first_frame_mask = first_frame_mask.to(device, dtype=first_frame_mask.dtype)
+        else:
+            state.extra["condition_cache_mode"] = "miss_full_prepare"
+            with self.profile_stage(state, "prepare.latents"):
+                latents_outputs = pipe.prepare_latents(
+                    image_tensor,
+                    batch_size=1,
+                    num_channels_latents=pipe.vae.config.z_dim,
+                    height=height,
+                    width=width,
+                    num_frames=num_frames,
+                    dtype=torch.float32,
+                    device=device,
+                    generator=generator,
+                    latents=None,
+                )
+            if pipe.config.expand_timesteps:
+                latents, condition, first_frame_mask = latents_outputs
+            else:
+                latents, condition = latents_outputs
+                first_frame_mask = None
+            with self.profile_stage(state, "prepare.condition_cache_put"):
+                self.condition_cache.put(condition_cache_key, (condition, first_frame_mask))
+
+        state.extra["condition"] = condition
+        state.extra["first_frame_mask"] = first_frame_mask
+        state.extra["latents_shape"] = self._shape_text(latents)
+        state.extra["condition_shape"] = self._shape_text(condition)
+        state.extra["first_frame_mask_shape"] = self._shape_text(first_frame_mask)
+        return latents, condition, first_frame_mask
+
+    def _probe_condition_cache(
+        self,
+        state: RunnerState,
+        image_tensor: torch.Tensor,
+        latents: torch.Tensor,
+        condition: torch.Tensor,
+        first_frame_mask: torch.Tensor | None,
+        height: int,
+        width: int,
+        num_frames: int,
+        device: torch.device,
+    ) -> None:
+        if not self.config.probe_condition_cache:
+            state.extra["condition_probe_enabled"] = False
+            return
+
+        pipe = self.pipe
+        sampling = state.sampling
+        with self.profile_stage(state, "probe.condition_prepare_latents"):
+            probe_seed = sampling.seed + 1
+            probe_generator = torch.Generator(device=device).manual_seed(probe_seed)
+            probe_outputs = pipe.prepare_latents(
+                image_tensor,
+                batch_size=1,
+                num_channels_latents=pipe.vae.config.z_dim,
+                height=height,
+                width=width,
+                num_frames=num_frames,
+                dtype=torch.float32,
+                device=device,
+                generator=probe_generator,
+                latents=None,
+            )
+        if pipe.config.expand_timesteps:
+            probe_latents, probe_condition, probe_first_frame_mask = probe_outputs
+        else:
+            probe_latents, probe_condition = probe_outputs
+            probe_first_frame_mask = None
+        with self.profile_stage(state, "probe.condition_compare"):
+            state.extra["condition_probe_enabled"] = True
+            state.extra["condition_same_across_seed"] = self._same_tensor(condition, probe_condition)
+            state.extra["first_frame_mask_same_across_seed"] = self._same_tensor(
+                first_frame_mask, probe_first_frame_mask
+            )
+            state.extra["latents_same_across_seed"] = self._same_tensor(latents, probe_latents)
+            state.extra["condition_cache_candidate"] = (
+                state.extra["condition_same_across_seed"] is True
+                and state.extra["first_frame_mask_same_across_seed"] is True
+                and state.extra["latents_same_across_seed"] is False
+            )
+
+    def _clone_prepare_tensors(self, state: RunnerState, latents: torch.Tensor) -> None:
+        state.latents = self._clone_tensor(latents)
+        state.extra["condition"] = self._clone_tensor(state.extra["condition"])
+        if state.extra["first_frame_mask"] is not None:
+            state.extra["first_frame_mask"] = self._clone_tensor(state.extra["first_frame_mask"])
+        state.prompt_embeds = self._clone_tensor(state.prompt_embeds)
+        if state.negative_prompt_embeds is not None:
+            state.negative_prompt_embeds = self._clone_tensor(state.negative_prompt_embeds)
+
     def prepare_encode(self, state: RunnerState) -> RunnerState:
         pipe = self.pipe
         sampling = state.sampling
@@ -144,79 +382,21 @@ class Wan22I2VPipeline:
         state.extra["num_frames"] = num_frames
         state.extra["guidance_scale"] = sampling.guidance_scale
 
-        with self.profile_stage(state, "prepare.prompt_cache_lookup"):
-            cache_key = (state.prompt, state.negative_prompt)
-            cached = self.prompt_cache.get(cache_key)
-        state.extra["prompt_cache_hit"] = cached is not None
-        if cached is not None:
-            with self.profile_stage(state, "prepare.prompt_cache_restore"):
-                state.prompt_embeds, state.negative_prompt_embeds = cached
-        else:
-            with self.profile_stage(state, "prepare.prompt_encode"):
-                prompt_embeds, negative_prompt_embeds = pipe.encode_prompt(
-                    prompt=state.prompt,
-                    negative_prompt=state.negative_prompt,
-                    do_classifier_free_guidance=sampling.guidance_scale > 1.0,
-                    num_videos_per_prompt=1,
-                    max_sequence_length=512,
-                    device=device,
-                )
-            with self.profile_stage(state, "prepare.prompt_to_dtype"):
-                transformer_dtype = pipe.transformer.dtype
-                state.prompt_embeds = prompt_embeds.to(transformer_dtype)
-                state.negative_prompt_embeds = (
-                    None if negative_prompt_embeds is None else negative_prompt_embeds.to(transformer_dtype)
-                )
-            with self.profile_stage(state, "prepare.prompt_cache_put"):
-                self.prompt_cache.put(cache_key, (state.prompt_embeds, state.negative_prompt_embeds))
+        self._prepare_prompt_embeds(state, device)
+        image_tensor = self._prepare_image_tensor(state, image, height, width, device)
 
-        with self.profile_stage(state, "prepare.image_cache_lookup"):
-            image_cache_key = self._image_cache_key(state.image, height, width)
-            cached_image_tensor = self.image_cache.get(image_cache_key)
-        state.extra["image_cache_hit"] = cached_image_tensor is not None
-        if cached_image_tensor is not None:
-            with self.profile_stage(state, "prepare.image_cache_restore"):
-                image_tensor = cached_image_tensor.to(device, dtype=torch.float32)
-        else:
-            with self.profile_stage(state, "prepare.image_preprocess"):
-                image_tensor = pipe.video_processor.preprocess(image, height=height, width=width).to(
-                    device, dtype=torch.float32
-                )
-            with self.profile_stage(state, "prepare.image_cache_put"):
-                self.image_cache.put(image_cache_key, image_tensor)
         with self.profile_stage(state, "prepare.generator"):
             generator = torch.Generator(device=device).manual_seed(sampling.seed)
 
-        with self.profile_stage(state, "prepare.latents"):
-            latents_outputs = pipe.prepare_latents(
-                image_tensor,
-                batch_size=1,
-                num_channels_latents=pipe.vae.config.z_dim,
-                height=height,
-                width=width,
-                num_frames=num_frames,
-                dtype=torch.float32,
-                device=device,
-                generator=generator,
-                latents=None,
-            )
-        if pipe.config.expand_timesteps:
-            latents, condition, first_frame_mask = latents_outputs
-            state.extra["condition"] = condition
-            state.extra["first_frame_mask"] = first_frame_mask
-        else:
-            latents, condition = latents_outputs
-            state.extra["condition"] = condition
-            state.extra["first_frame_mask"] = None
+        latents, condition, first_frame_mask = self._prepare_latents_and_condition(
+            state, image_tensor, height, width, num_frames, device, generator
+        )
+        self._probe_condition_cache(
+            state, image_tensor, latents, condition, first_frame_mask, height, width, num_frames, device
+        )
 
         with self.profile_stage(state, "prepare.clone_tensors"):
-            state.latents = self._clone_tensor(latents)
-            state.extra["condition"] = self._clone_tensor(state.extra["condition"])
-            if state.extra["first_frame_mask"] is not None:
-                state.extra["first_frame_mask"] = self._clone_tensor(state.extra["first_frame_mask"])
-            state.prompt_embeds = self._clone_tensor(state.prompt_embeds)
-            if state.negative_prompt_embeds is not None:
-                state.negative_prompt_embeds = self._clone_tensor(state.negative_prompt_embeds)
+            self._clone_prepare_tensors(state, latents)
 
         with self.profile_stage(state, "prepare.timesteps"):
             pipe.scheduler.set_timesteps(sampling.num_inference_steps, device=device)

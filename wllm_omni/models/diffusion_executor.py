@@ -187,6 +187,16 @@ class DiffusionExecutor(ModelExecutor):
             guidance_scale=state.extra.get("guidance_scale"),
             prompt_cache_hit=state.extra.get("prompt_cache_hit"),
             image_cache_hit=state.extra.get("image_cache_hit"),
+            condition_cache_hit=state.extra.get("condition_cache_hit"),
+            condition_cache_mode=state.extra.get("condition_cache_mode"),
+            latents_shape=state.extra.get("latents_shape"),
+            condition_shape=state.extra.get("condition_shape"),
+            first_frame_mask_shape=state.extra.get("first_frame_mask_shape"),
+            condition_probe_enabled=state.extra.get("condition_probe_enabled"),
+            condition_same_across_seed=state.extra.get("condition_same_across_seed"),
+            first_frame_mask_same_across_seed=state.extra.get("first_frame_mask_same_across_seed"),
+            latents_same_across_seed=state.extra.get("latents_same_across_seed"),
+            condition_cache_candidate=state.extra.get("condition_cache_candidate"),
             **self.pipeline.runtime_info(),
         )
         if self.pipeline.config.use_cpu_offload:

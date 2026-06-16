@@ -49,3 +49,30 @@ class TensorCache:
         while len(self._items) > self.capacity:
             self._items.popitem(last=False)
 
+
+class ConditionCache:
+
+    def __init__(self, capacity: int):
+        self.capacity = capacity
+        self._items: OrderedDict[tuple, tuple[torch.Tensor, torch.Tensor | None]] = OrderedDict()
+
+    def get(self, key: tuple) -> tuple[torch.Tensor, torch.Tensor | None] | None:
+        value = self._items.get(key)
+        if value is None:
+            return None
+        self._items.move_to_end(key)
+        condition, first_frame_mask = value
+        return condition.clone(), None if first_frame_mask is None else first_frame_mask.clone()
+
+    def put(self, key: tuple, value: tuple[torch.Tensor, torch.Tensor | None]) -> None:
+        if self.capacity <= 0:
+            return
+        condition, first_frame_mask = value
+        self._items[key] = (
+            condition.detach().cpu(),
+            None if first_frame_mask is None else first_frame_mask.detach().cpu(),
+        )
+        self._items.move_to_end(key)
+        while len(self._items) > self.capacity:
+            self._items.popitem(last=False)
+
