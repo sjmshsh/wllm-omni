@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+from dataclasses import dataclass
 from pathlib import Path
 
 import torch
@@ -14,6 +15,32 @@ from wllm_omni.outputs import OmniOutput
 from wllm_omni.profiler import RequestProfiler
 from wllm_omni.utils import resize_with_aspect
 from wllm_omni.worker.utils import RunnerState
+
+
+@dataclass(slots=True)
+class WanRequestShape:
+    image: Image.Image
+    height: int
+    width: int
+    num_frames: int
+
+
+@dataclass(slots=True)
+class WanConditionBundle:
+    latents: torch.Tensor
+    condition: torch.Tensor
+    first_frame_mask: torch.Tensor | None
+    cache_hit: bool
+    cache_mode: str
+
+
+@dataclass(slots=True)
+class WanDenoiseInputs:
+    latent_model_input: torch.Tensor
+    timestep: torch.Tensor
+    prompt_embeds: torch.Tensor
+    negative_prompt_embeds: torch.Tensor | None
+    guidance_scale: float
 
 
 class Wan22I2VPipeline:
@@ -179,6 +206,28 @@ class Wan22I2VPipeline:
             raise TypeError(f"Expected RequestProfiler payload, got {type(profile).__name__}.")
         return profile.stage(name, self._profile_sync)
 
+    def _prepare_request_shape(self, state: RunnerState) -> WanRequestShape:
+        pipe = self.pipe
+        sampling = state.sampling
+        with self.profile_stage(state, "prepare.image_load_resize"):
+            height, width = self._align_resolution(sampling.height, sampling.width)
+            num_frames = self._adjust_num_frames(sampling.num_frames, pipe.vae_scale_factor_temporal)
+            image = resize_with_aspect(self._load_image(state.image), height, width)
+        state.extra["height"] = height
+        state.extra["width"] = width
+        state.extra["num_frames"] = num_frames
+        state.extra["guidance_scale"] = sampling.guidance_scale
+        return WanRequestShape(image=image, height=height, width=width, num_frames=num_frames)
+
+    def _store_condition_bundle(self, state: RunnerState, bundle: WanConditionBundle) -> None:
+        state.extra["condition"] = bundle.condition
+        state.extra["first_frame_mask"] = bundle.first_frame_mask
+        state.extra["condition_cache_hit"] = bundle.cache_hit
+        state.extra["condition_cache_mode"] = bundle.cache_mode
+        state.extra["latents_shape"] = self._shape_text(bundle.latents)
+        state.extra["condition_shape"] = self._shape_text(bundle.condition)
+        state.extra["first_frame_mask_shape"] = self._shape_text(bundle.first_frame_mask)
+
     def _prepare_prompt_embeds(self, state: RunnerState, device: torch.device) -> None:
         pipe = self.pipe
         sampling = state.sampling
@@ -240,22 +289,20 @@ class Wan22I2VPipeline:
         self,
         state: RunnerState,
         image_tensor: torch.Tensor,
-        height: int,
-        width: int,
-        num_frames: int,
+        request_shape: WanRequestShape,
         device: torch.device,
         generator: torch.Generator,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    ) -> WanConditionBundle:
         pipe = self.pipe
+        height = request_shape.height
+        width = request_shape.width
+        num_frames = request_shape.num_frames
 
         with self.profile_stage(state, "prepare.condition_cache_lookup"):
             condition_cache_key = self._condition_cache_key(state.image, height, width, num_frames)
             cached_condition = self.condition_cache.get(condition_cache_key)
-        condition_cache_hit = cached_condition is not None
-        state.extra["condition_cache_hit"] = condition_cache_hit
 
-        if condition_cache_hit:
-            state.extra["condition_cache_mode"] = "hit_latents_only"
+        if cached_condition is not None:
             with self.profile_stage(state, "prepare.latents_noise"):
                 latents = self._prepare_noise_latents(
                     batch_size=1,
@@ -272,35 +319,42 @@ class Wan22I2VPipeline:
                 condition = condition.to(device, dtype=condition.dtype)
                 if first_frame_mask is not None:
                     first_frame_mask = first_frame_mask.to(device, dtype=first_frame_mask.dtype)
-        else:
-            state.extra["condition_cache_mode"] = "miss_full_prepare"
-            with self.profile_stage(state, "prepare.latents"):
-                latents_outputs = pipe.prepare_latents(
-                    image_tensor,
-                    batch_size=1,
-                    num_channels_latents=pipe.vae.config.z_dim,
-                    height=height,
-                    width=width,
-                    num_frames=num_frames,
-                    dtype=torch.float32,
-                    device=device,
-                    generator=generator,
-                    latents=None,
-                )
-            if pipe.config.expand_timesteps:
-                latents, condition, first_frame_mask = latents_outputs
-            else:
-                latents, condition = latents_outputs
-                first_frame_mask = None
-            with self.profile_stage(state, "prepare.condition_cache_put"):
-                self.condition_cache.put(condition_cache_key, (condition, first_frame_mask))
+            return WanConditionBundle(
+                latents=latents,
+                condition=condition,
+                first_frame_mask=first_frame_mask,
+                cache_hit=True,
+                cache_mode="hit_latents_only",
+            )
 
-        state.extra["condition"] = condition
-        state.extra["first_frame_mask"] = first_frame_mask
-        state.extra["latents_shape"] = self._shape_text(latents)
-        state.extra["condition_shape"] = self._shape_text(condition)
-        state.extra["first_frame_mask_shape"] = self._shape_text(first_frame_mask)
-        return latents, condition, first_frame_mask
+        with self.profile_stage(state, "prepare.latents"):
+            latents_outputs = pipe.prepare_latents(
+                image_tensor,
+                batch_size=1,
+                num_channels_latents=pipe.vae.config.z_dim,
+                height=height,
+                width=width,
+                num_frames=num_frames,
+                dtype=torch.float32,
+                device=device,
+                generator=generator,
+                latents=None,
+            )
+        if pipe.config.expand_timesteps:
+            latents, condition, first_frame_mask = latents_outputs
+        else:
+            latents, condition = latents_outputs
+            first_frame_mask = None
+        with self.profile_stage(state, "prepare.condition_cache_put"):
+            self.condition_cache.put(condition_cache_key, (condition, first_frame_mask))
+
+        return WanConditionBundle(
+            latents=latents,
+            condition=condition,
+            first_frame_mask=first_frame_mask,
+            cache_hit=False,
+            cache_mode="miss_full_prepare",
+        )
 
     def _probe_condition_cache(
         self,
@@ -373,30 +427,31 @@ class Wan22I2VPipeline:
                 flow_shift=sampling.flow_shift,
             )
 
-        with self.profile_stage(state, "prepare.image_load_resize"):
-            height, width = self._align_resolution(sampling.height, sampling.width)
-            num_frames = self._adjust_num_frames(sampling.num_frames, pipe.vae_scale_factor_temporal)
-            image = resize_with_aspect(self._load_image(state.image), height, width)
-        state.extra["height"] = height
-        state.extra["width"] = width
-        state.extra["num_frames"] = num_frames
-        state.extra["guidance_scale"] = sampling.guidance_scale
-
+        request_shape = self._prepare_request_shape(state)
         self._prepare_prompt_embeds(state, device)
-        image_tensor = self._prepare_image_tensor(state, image, height, width, device)
+        image_tensor = self._prepare_image_tensor(
+            state, request_shape.image, request_shape.height, request_shape.width, device
+        )
 
         with self.profile_stage(state, "prepare.generator"):
             generator = torch.Generator(device=device).manual_seed(sampling.seed)
 
-        latents, condition, first_frame_mask = self._prepare_latents_and_condition(
-            state, image_tensor, height, width, num_frames, device, generator
-        )
+        condition_bundle = self._prepare_latents_and_condition(state, image_tensor, request_shape, device, generator)
+        self._store_condition_bundle(state, condition_bundle)
         self._probe_condition_cache(
-            state, image_tensor, latents, condition, first_frame_mask, height, width, num_frames, device
+            state,
+            image_tensor,
+            condition_bundle.latents,
+            condition_bundle.condition,
+            condition_bundle.first_frame_mask,
+            request_shape.height,
+            request_shape.width,
+            request_shape.num_frames,
+            device,
         )
 
         with self.profile_stage(state, "prepare.clone_tensors"):
-            self._clone_prepare_tensors(state, latents)
+            self._clone_prepare_tensors(state, condition_bundle.latents)
 
         with self.profile_stage(state, "prepare.timesteps"):
             pipe.scheduler.set_timesteps(sampling.num_inference_steps, device=device)
@@ -406,52 +461,74 @@ class Wan22I2VPipeline:
         state.step_index = 0
         return state
 
-    def denoise_step(self, state: RunnerState) -> torch.Tensor:
+    def _prepare_denoise_inputs(self, state: RunnerState) -> WanDenoiseInputs:
         pipe = self.pipe
-        with self.profile_stage(state, "denoise.prepare_inputs"):
-            latents = state.latents
-            device = latents.device
-            t = state.timesteps[state.step_index].to(device)
-            condition = state.extra["condition"].to(device)
-            first_frame_mask = state.extra.get("first_frame_mask")
-            if first_frame_mask is not None:
-                first_frame_mask = first_frame_mask.to(device)
-            guidance_scale = state.extra["guidance_scale"]
-            transformer_dtype = pipe.transformer.dtype
-            prompt_embeds = state.prompt_embeds.to(device)
-            negative_prompt_embeds = (
-                None if state.negative_prompt_embeds is None else state.negative_prompt_embeds.to(device)
-            )
+        latents = state.latents
+        device = latents.device
+        t = state.timesteps[state.step_index].to(device)
+        condition = state.extra["condition"].to(device)
+        first_frame_mask = state.extra.get("first_frame_mask")
+        if first_frame_mask is not None:
+            first_frame_mask = first_frame_mask.to(device)
+        guidance_scale = state.extra["guidance_scale"]
+        transformer_dtype = pipe.transformer.dtype
+        prompt_embeds = state.prompt_embeds.to(device)
+        negative_prompt_embeds = None if state.negative_prompt_embeds is None else state.negative_prompt_embeds.to(device)
 
-            if pipe.config.expand_timesteps:
-                latent_model_input = (1 - first_frame_mask) * condition + first_frame_mask * latents
-                latent_model_input = latent_model_input.to(transformer_dtype)
-                temp_ts = (first_frame_mask[0][0][:, ::2, ::2] * t).flatten()
-                timestep = temp_ts.unsqueeze(0).expand(latents.shape[0], -1)
-            else:
-                latent_model_input = torch.cat([latents, condition], dim=1).to(transformer_dtype)
-                timestep = t.expand(latents.shape[0])
+        if pipe.config.expand_timesteps:
+            latent_model_input = (1 - first_frame_mask) * condition + first_frame_mask * latents
+            latent_model_input = latent_model_input.to(transformer_dtype)
+            temp_ts = (first_frame_mask[0][0][:, ::2, ::2] * t).flatten()
+            timestep = temp_ts.unsqueeze(0).expand(latents.shape[0], -1)
+        else:
+            latent_model_input = torch.cat([latents, condition], dim=1).to(transformer_dtype)
+            timestep = t.expand(latents.shape[0])
+
+        state.extra["denoise_latent_model_input_shape"] = self._shape_text(latent_model_input)
+        state.extra["denoise_timestep_shape"] = self._shape_text(timestep)
+        return WanDenoiseInputs(
+            latent_model_input=latent_model_input,
+            timestep=timestep,
+            prompt_embeds=prompt_embeds,
+            negative_prompt_embeds=negative_prompt_embeds,
+            guidance_scale=guidance_scale,
+        )
+
+    def _run_transformer_forward(
+        self,
+        inputs: WanDenoiseInputs,
+        encoder_hidden_states: torch.Tensor,
+        cache_name: str,
+    ) -> torch.Tensor:
+        pipe = self.pipe
+        with pipe.transformer.cache_context(cache_name):
+            return pipe.transformer(
+                hidden_states=inputs.latent_model_input,
+                timestep=inputs.timestep,
+                encoder_hidden_states=encoder_hidden_states,
+                return_dict=False,
+            )[0]
+
+    @staticmethod
+    def _apply_classifier_free_guidance(
+        noise_pred: torch.Tensor,
+        noise_uncond: torch.Tensor,
+        guidance_scale: float,
+    ) -> torch.Tensor:
+        return noise_uncond + guidance_scale * (noise_pred - noise_uncond)
+
+    def denoise_step(self, state: RunnerState) -> torch.Tensor:
+        with self.profile_stage(state, "denoise.prepare_inputs"):
+            inputs = self._prepare_denoise_inputs(state)
 
         with self.profile_stage(state, "denoise.transformer_cond"):
-            with pipe.transformer.cache_context("cond"):
-                noise_pred = pipe.transformer(
-                    hidden_states=latent_model_input,
-                    timestep=timestep,
-                    encoder_hidden_states=prompt_embeds,
-                    return_dict=False,
-                )[0]
+            noise_pred = self._run_transformer_forward(inputs, inputs.prompt_embeds, "cond")
 
-        if guidance_scale > 1.0:
+        if inputs.guidance_scale > 1.0:
             with self.profile_stage(state, "denoise.transformer_uncond"):
-                with pipe.transformer.cache_context("uncond"):
-                    noise_uncond = pipe.transformer(
-                        hidden_states=latent_model_input,
-                        timestep=timestep,
-                        encoder_hidden_states=negative_prompt_embeds,
-                        return_dict=False,
-                    )[0]
+                noise_uncond = self._run_transformer_forward(inputs, inputs.negative_prompt_embeds, "uncond")
             with self.profile_stage(state, "denoise.cfg_combine"):
-                noise_pred = noise_uncond + guidance_scale * (noise_pred - noise_uncond)
+                noise_pred = self._apply_classifier_free_guidance(noise_pred, noise_uncond, inputs.guidance_scale)
 
         return noise_pred
 

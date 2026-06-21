@@ -192,6 +192,8 @@ class DiffusionExecutor(ModelExecutor):
             latents_shape=state.extra.get("latents_shape"),
             condition_shape=state.extra.get("condition_shape"),
             first_frame_mask_shape=state.extra.get("first_frame_mask_shape"),
+            denoise_latent_model_input_shape=state.extra.get("denoise_latent_model_input_shape"),
+            denoise_timestep_shape=state.extra.get("denoise_timestep_shape"),
             condition_probe_enabled=state.extra.get("condition_probe_enabled"),
             condition_same_across_seed=state.extra.get("condition_same_across_seed"),
             first_frame_mask_same_across_seed=state.extra.get("first_frame_mask_same_across_seed"),
