@@ -1,5 +1,38 @@
-from wllm_omni.config import DEFAULT_IMAGE, DEFAULT_MODEL, DEFAULT_NEGATIVE_PROMPT, DEFAULT_PROMPT, EngineConfig
-from wllm_omni.llm import OmniLLM
-from wllm_omni.outputs import OmniOutput
-from wllm_omni.request import OmniRequest
-from wllm_omni.sampling_params import OmniSamplingParams, PRESETS
+from __future__ import annotations
+
+__all__ = [
+    "DEFAULT_IMAGE",
+    "DEFAULT_MODEL",
+    "DEFAULT_NEGATIVE_PROMPT",
+    "DEFAULT_PROMPT",
+    "EngineConfig",
+    "OmniLLM",
+    "OmniOutput",
+    "OmniRequest",
+    "OmniSamplingParams",
+    "PRESETS",
+]
+
+
+def __getattr__(name: str):
+    if name in {"DEFAULT_IMAGE", "DEFAULT_MODEL", "DEFAULT_NEGATIVE_PROMPT", "DEFAULT_PROMPT", "EngineConfig"}:
+        from wllm_omni import config
+
+        return getattr(config, name)
+    if name == "OmniLLM":
+        from wllm_omni.llm import OmniLLM
+
+        return OmniLLM
+    if name == "OmniOutput":
+        from wllm_omni.outputs import OmniOutput
+
+        return OmniOutput
+    if name == "OmniRequest":
+        from wllm_omni.request import OmniRequest
+
+        return OmniRequest
+    if name in {"OmniSamplingParams", "PRESETS"}:
+        from wllm_omni import sampling_params
+
+        return getattr(sampling_params, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

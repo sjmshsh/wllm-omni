@@ -10,6 +10,8 @@ from wllm_omni.models.wan22 import Wan22I2VPipeline
 from wllm_omni.profiler import RequestProfiler
 from wllm_omni.request import OmniRequest
 from wllm_omni.worker.utils import (
+    ExecutionPhase,
+    ExecutorCapability,
     ForwardBatch,
     ModelForwardOutput,
     RequestState,
@@ -26,6 +28,11 @@ class DiffusionExecutor(ModelExecutor):
     """
 
     paradigm = ModelParadigm.DIFFUSION
+    capabilities = frozenset({
+        ExecutorCapability.STEPWISE,
+        ExecutorCapability.CACHEABLE_PREPARE,
+        ExecutorCapability.MULTIMODAL_INPUT,
+    })
 
     def __init__(self, pipeline: Wan22I2VPipeline):
         self.pipeline = pipeline
@@ -71,10 +78,10 @@ class DiffusionExecutor(ModelExecutor):
             raise ValueError(f"DiffusionExecutor V1 supports exactly one request per forward batch, got {len(states)}.")
         state = states[0]
         payload = self._payload(state)
-        mode = "init" if not state.initialized else "denoise"
+        phase = ExecutionPhase.PREPARE if not state.initialized else ExecutionPhase.STEP
         if payload.denoise_completed:
-            mode = "finalize"
-        return ForwardBatch(paradigm=self.paradigm, req_ids=[state.sched_req_id], mode=mode, payload=payload)
+            phase = ExecutionPhase.FINALIZE
+        return ForwardBatch(paradigm=self.paradigm, req_ids=[state.sched_req_id], phase=phase, payload=payload)
 
     def forward(self, batch: ForwardBatch) -> ModelForwardOutput:
         if batch.paradigm != self.paradigm:
@@ -86,7 +93,7 @@ class DiffusionExecutor(ModelExecutor):
         profile = self._profiler(payload)
         output: ModelForwardOutput
         with self._profile_stage(payload, "forward.total"):
-            if batch.mode == "init":
+            if batch.phase == ExecutionPhase.PREPARE:
                 with self._profile_stage(payload, "forward.prepare_encode"):
                     payload = self.pipeline.prepare_encode(payload)
 
