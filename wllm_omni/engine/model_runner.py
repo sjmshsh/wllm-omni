@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from contextlib import nullcontext
+from typing import TYPE_CHECKING, Any
 
-import torch
-
-from wllm_omni.config import EngineConfig
-from wllm_omni.model_types import ModelParadigm
-from wllm_omni.models import ModelExecutor
-from wllm_omni.models.diffusion_executor import DiffusionExecutor
-from wllm_omni.models.wan22 import Wan22I2VPipeline
+from wllm_omni.models import ExecutorRegistry, ModelExecutor
 from wllm_omni.sched.interface import SchedulerOutput
 from wllm_omni.worker.utils import RequestState, RunnerBatchOutput, RunnerOutput
+
+if TYPE_CHECKING:
+    from wllm_omni.config import EngineConfig
 
 
 class ModelRunner:
@@ -21,15 +20,13 @@ class ModelRunner:
     multimodal feature caches, or world-model rollout state.
     """
 
-    def __init__(self, config: EngineConfig, executors: list[ModelExecutor] | None = None):
+    def __init__(self, config: EngineConfig | Any, executors: list[ModelExecutor] | None = None):
         self.config = config
         if executors is None:
-            executors = [DiffusionExecutor(Wan22I2VPipeline(config))]
-        if not executors:
-            raise ValueError("ModelRunner requires at least one executor.")
-
-        self.executors = {executor.paradigm: executor for executor in executors}
-        self.default_executor = executors[0]
+            executors = self._default_executors(config)
+        self.registry = ExecutorRegistry(executors)
+        self.executors = self.registry.executors
+        self.default_executor = self.registry.default_executor
         self.state_cache: dict[str, RequestState] = {}
 
     def execute(self, scheduler_output: SchedulerOutput) -> RunnerBatchOutput:
@@ -41,7 +38,7 @@ class ModelRunner:
         """
 
         outputs: list[RunnerOutput] = []
-        with torch.no_grad():
+        with self._no_grad_context():
             self._release_finished_scheduler_states(scheduler_output.finished_req_ids)
             try:
                 states = self._prepare_scheduled_states(scheduler_output)
@@ -81,6 +78,24 @@ class ModelRunner:
             )
         return batch_output.to_single()
 
+
+    @staticmethod
+    def _no_grad_context():
+        try:
+            import torch
+        except ModuleNotFoundError:
+            return nullcontext()
+        return torch.no_grad()
+
+    @staticmethod
+    def _default_executors(config: EngineConfig) -> list[ModelExecutor]:
+        # Keep heavy diffusion imports out of ModelRunner import time so tests and
+        # custom executors can use the runner without loading model dependencies.
+        from wllm_omni.models.diffusion_executor import DiffusionExecutor
+        from wllm_omni.models.wan22 import Wan22I2VPipeline
+
+        return [DiffusionExecutor(Wan22I2VPipeline(config))]
+
     def _prepare_scheduled_states(self, scheduler_output: SchedulerOutput) -> list[RequestState]:
         for entry in scheduler_output.scheduled_entries:
             if not entry.is_new:
@@ -107,21 +122,10 @@ class ModelRunner:
         return list(grouped.values())
 
     def _executor_for_request(self, request) -> ModelExecutor:
-        paradigm = getattr(request, "model_paradigm", None)
-        if paradigm is None:
-            return self.default_executor
-        if isinstance(paradigm, str):
-            paradigm = ModelParadigm(paradigm)
-        executor = self.executors.get(paradigm)
-        if executor is None:
-            raise ValueError(f"No executor registered for request paradigm={paradigm}.")
-        return executor
+        return self.registry.resolve_request(request)
 
     def _executor_for_state(self, state: RequestState) -> ModelExecutor:
-        executor = self.executors.get(state.paradigm)
-        if executor is None:
-            raise ValueError(f"No executor registered for paradigm={state.paradigm}.")
-        return executor
+        return self.registry.resolve_state(state)
 
     def _release_finished_scheduler_states(self, finished_req_ids: set[str]) -> None:
         for sched_req_id in finished_req_ids:

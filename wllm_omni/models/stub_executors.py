@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from wllm_omni.models import ModelExecutor
-from wllm_omni.request import OmniRequest
 from wllm_omni.worker.utils import (
+    ExecutionPhase,
+    ExecutorCapability,
     ForwardBatch,
     ModelForwardOutput,
     ModelParadigm,
     RequestState,
     RunnerOutput,
 )
+
+if TYPE_CHECKING:
+    from wllm_omni.request import OmniRequest
 
 
 @dataclass(slots=True)
@@ -47,6 +51,7 @@ class WorldModelState:
 class _UnsupportedExecutor(ModelExecutor):
     paradigm: ModelParadigm
     state_cls: type
+    capabilities = frozenset({ExecutorCapability.STEPWISE})
 
     def init_state(self, sched_req_id: str, request: OmniRequest) -> RequestState:
         return RequestState(
@@ -63,7 +68,7 @@ class _UnsupportedExecutor(ModelExecutor):
         return ForwardBatch(
             paradigm=self.paradigm,
             req_ids=[state.sched_req_id for state in states],
-            mode="unsupported",
+            phase=ExecutionPhase.FINALIZE,
             payload=[state.payload for state in states],
         )
 

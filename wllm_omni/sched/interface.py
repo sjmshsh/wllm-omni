@@ -4,8 +4,10 @@ import enum
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from wllm_omni.request import OmniRequest
+if TYPE_CHECKING:
+    from wllm_omni.request import OmniRequest
 
 
 class RequestStatus(enum.IntEnum):

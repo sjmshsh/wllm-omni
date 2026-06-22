@@ -1,15 +1,32 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import enum
 from pathlib import Path
-from typing import Any
-
-import torch
-from PIL import Image
+from typing import TYPE_CHECKING, Any
 
 from wllm_omni.model_types import ModelParadigm
-from wllm_omni.outputs import OmniOutput
-from wllm_omni.sampling_params import OmniSamplingParams
+
+if TYPE_CHECKING:
+    import torch
+    from PIL import Image
+
+    from wllm_omni.outputs import OmniOutput
+    from wllm_omni.sampling_params import OmniSamplingParams
+
+
+class ExecutionPhase(str, enum.Enum):
+    PREPARE = "prepare"
+    STEP = "step"
+    FINALIZE = "finalize"
+
+
+class ExecutorCapability(str, enum.Enum):
+    STEPWISE = "stepwise"
+    CACHEABLE_PREPARE = "cacheable_prepare"
+    MULTIMODAL_INPUT = "multimodal_input"
+    STREAMING = "streaming"
+    KV_CACHE = "kv_cache"
 
 
 @dataclass(slots=True)
@@ -29,8 +46,13 @@ class RequestState:
 class ForwardBatch:
     paradigm: ModelParadigm
     req_ids: list[str]
-    mode: str
+    phase: ExecutionPhase
     payload: Any = None
+
+    @property
+    def mode(self) -> str:
+        """Compatibility view for older debug code that printed batch.mode."""
+        return self.phase.value
 
 
 @dataclass(slots=True)
