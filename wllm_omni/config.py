@@ -39,3 +39,6 @@ class EngineConfig:
     condition_cache_size: int = 4
     enable_profiling: bool = False
     probe_condition_cache: bool = False
+    enable_mini_omni: bool = False
+    ar_model: str | None = None
+    ar_max_new_tokens: int = 64

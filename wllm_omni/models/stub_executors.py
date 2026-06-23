@@ -18,15 +18,6 @@ if TYPE_CHECKING:
     from wllm_omni.request import OmniRequest
 
 
-@dataclass(slots=True)
-class ARState:
-    request: OmniRequest
-    input_ids: Any = None
-    positions: Any = None
-    kv_cache_handle: Any = None
-    sampling_state: Any = None
-    extra: dict[str, Any] = field(default_factory=dict)
-
 
 @dataclass(slots=True)
 class MultimodalState:
@@ -97,10 +88,6 @@ class _UnsupportedExecutor(ModelExecutor):
     def release(self, state: RequestState) -> None:
         state.payload = None
 
-
-class ARExecutor(_UnsupportedExecutor):
-    paradigm = ModelParadigm.AUTOREGRESSIVE
-    state_cls = ARState
 
 
 class MultimodalExecutor(_UnsupportedExecutor):
