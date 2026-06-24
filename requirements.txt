@@ -1,11 +1,9 @@
-ninja  # For faster builds.
-psutil
-ray
-sentencepiece  # Required for LLaMA tokenizer.
-numpy
-torch >= 2.0.0
-transformers >= 4.28.0  # Required for LLaMA.
-xformers >= 0.0.19
-fastapi
-uvicorn
-pydantic  # Required for OpenAI server.
+torch>=2.4.0
+transformers>=4.51.0
+accelerate>=1.0.0
+ftfy>=6.3.1
+Pillow>=10.0.0
+huggingface_hub>=0.24.0
+numpy>=1.24.0
+# Wan2.2 support currently relies on a recent diffusers build.
+diffusers @ git+https://github.com/huggingface/diffusers.git@a5bc04696

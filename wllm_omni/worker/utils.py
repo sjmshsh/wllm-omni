@@ -11,7 +11,6 @@ if TYPE_CHECKING:
     import torch
     from PIL import Image
 
-    from wllm_omni.outputs import OmniOutput
     from wllm_omni.sampling_params import OmniSamplingParams
 
 
@@ -94,7 +93,7 @@ class RunnerOutput:
     req_id: str
     step_index: int | None = None
     finished: bool = False
-    result: OmniOutput | None = None
+    result: Any = None
     error: str | None = None
 
 

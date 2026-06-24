@@ -61,27 +61,41 @@ def _parse_vae_dtype(value: str) -> torch.dtype:
     raise ValueError(f"Unsupported VAE dtype: {value}")
 
 
+def _format_elapsed_ms(elapsed_s) -> str:
+    if elapsed_s is None:
+        return "None"
+    return f"{float(elapsed_s) * 1000.0:.2f}"
+
+
 def _print_mini_omni_trace(trace) -> None:
     if trace is None:
         return
     stages = " -> ".join(stage.name for stage in trace.stages)
     print(f"[wllm-omni][mini-omni] request_id={trace.request_id} stages={stages}", flush=True)
     for stage in trace.stages:
-        if stage.name != "ar.prompt_bridge":
-            continue
         metadata = stage.metadata
-        elapsed_s = metadata.get("elapsed_s")
-        elapsed_ms = None if elapsed_s is None else float(elapsed_s) * 1000.0
-        elapsed_text = "None" if elapsed_ms is None else f"{elapsed_ms:.2f}"
-        print(
-            "[wllm-omni][mini-omni] "
-            f"ar.model={metadata.get('model')} "
-            f"ar.mode={metadata.get('mode')} "
-            f"ar.input_tokens={metadata.get('input_tokens')} "
-            f"ar.output_tokens={metadata.get('output_tokens')} "
-            f"ar.elapsed_ms={elapsed_text}",
-            flush=True,
-        )
+        elapsed_text = _format_elapsed_ms(metadata.get("elapsed_s"))
+        if stage.name == "ar.prompt_bridge":
+            print(
+                "[wllm-omni][mini-omni] "
+                f"ar.model={metadata.get('model')} "
+                f"ar.mode={metadata.get('mode')} "
+                f"ar.input_tokens={metadata.get('input_tokens')} "
+                f"ar.output_tokens={metadata.get('output_tokens')} "
+                f"ar.elapsed_ms={elapsed_text}",
+                flush=True,
+            )
+        elif stage.name == "diffusion.wan22_i2v":
+            load_elapsed_text = _format_elapsed_ms(metadata.get("load_elapsed_s"))
+            print(
+                "[wllm-omni][mini-omni] "
+                f"diffusion.bridge={metadata.get('bridge')} "
+                f"diffusion.source_request_id={metadata.get('source_request_id')} "
+                f"diffusion.load_was_cold={metadata.get('load_was_cold')} "
+                f"diffusion.load_ms={load_elapsed_text} "
+                f"diffusion.elapsed_ms={elapsed_text}",
+                flush=True,
+            )
 
 
 def main():

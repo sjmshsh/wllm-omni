@@ -91,13 +91,26 @@ class ARExecutor(ModelExecutor):
         states: list[RequestState],
         output: ModelForwardOutput,
     ) -> list[RunnerOutput]:
-        return output.outputs
+        results: list[RunnerOutput] = []
+        output_by_req_id = {item.req_id: item for item in output.outputs}
+        for state in states:
+            item = output_by_req_id.get(state.sched_req_id)
+            if item is None:
+                continue
+            payload = self._state_payload(state)
+            results.append(
+                RunnerOutput(
+                    req_id=state.sched_req_id,
+                    step_index=item.step_index,
+                    finished=item.finished,
+                    result=payload.output,
+                    error=item.error,
+                )
+            )
+        return results
 
     def release(self, state: RequestState) -> None:
         state.payload = None
-
-    def generate_text(self, request: OmniRequest) -> ARTextOutput:
-        return self.pipeline.generate(request)
 
     @staticmethod
     def _state_payload(state: RequestState) -> ARState:

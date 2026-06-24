@@ -6,7 +6,7 @@ import torch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MODEL = str(REPO_ROOT / "models" / "Wan2.2-TI2V-5B-Diffusers")
-DEFAULT_IMAGE = str(REPO_ROOT / "assets" / "i2v_input.JPG")
+DEFAULT_IMAGE = str(REPO_ROOT / "assets" / "image.png")
 DEFAULT_PROMPT = (
     "Summer beach vacation style, a white cat wearing sunglasses sits on a surfboard. "
     "The fluffy-furred feline gazes directly at the camera with a relaxed expression. "

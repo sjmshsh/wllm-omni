@@ -2,9 +2,6 @@ from __future__ import annotations
 
 from wllm_omni.sched.interface import (
     CachedRequestData,
-    DiffusionRequestState,
-    DiffusionRequestStatus,
-    DiffusionSchedulerOutput,
     NewRequestData,
     RequestStatus,
     ScheduledRequest,
@@ -14,9 +11,6 @@ from wllm_omni.sched.interface import (
 
 __all__ = [
     "CachedRequestData",
-    "DiffusionRequestState",
-    "DiffusionRequestStatus",
-    "DiffusionSchedulerOutput",
     "NewRequestData",
     "RequestScheduler",
     "RequestStatus",
