@@ -71,7 +71,10 @@ def _print_mini_omni_trace(trace) -> None:
     if trace is None:
         return
     stages = " -> ".join(stage.name for stage in trace.stages)
+    graph_nodes = " -> ".join(getattr(trace, "graph_nodes", []) or [])
     print(f"[wllm-omni][mini-omni] request_id={trace.request_id} stages={stages}", flush=True)
+    if graph_nodes:
+        print(f"[wllm-omni][mini-omni] graph={graph_nodes}", flush=True)
     for stage in trace.stages:
         metadata = stage.metadata
         elapsed_text = _format_elapsed_ms(metadata.get("elapsed_s"))
@@ -90,6 +93,7 @@ def _print_mini_omni_trace(trace) -> None:
             print(
                 "[wllm-omni][mini-omni] "
                 f"diffusion.bridge={metadata.get('bridge')} "
+                f"diffusion.source_node={metadata.get('source_node')} "
                 f"diffusion.source_request_id={metadata.get('source_request_id')} "
                 f"diffusion.load_was_cold={metadata.get('load_was_cold')} "
                 f"diffusion.load_ms={load_elapsed_text} "
