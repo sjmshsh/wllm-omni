@@ -3,7 +3,8 @@ from pathlib import Path
 from PIL import Image
 
 from wllm_omni.config import DEFAULT_IMAGE, DEFAULT_MODEL, DEFAULT_PROMPT, EngineConfig
-from wllm_omni.engine.omni_engine import OmniEngine
+from wllm_omni.engine.mini_omni_runtime import MiniOmniTrace, MiniOmniRuntime
+from wllm_omni.engine.diffusion_engine import DiffusionEngine
 from wllm_omni.outputs import OmniOutput
 from wllm_omni.request import OmniRequest
 from wllm_omni.sampling_params import PRESETS, OmniSamplingParams, clone_sampling_params
@@ -14,7 +15,20 @@ class OmniLLM:
 
     def __init__(self, model: str = DEFAULT_MODEL, **kwargs):
         self.config = EngineConfig(model=model, **kwargs)
-        self.engine = OmniEngine(self.config)
+        if self.config.enable_mini_omni:
+            self.engine = MiniOmniRuntime(self.config)
+        else:
+            self.engine = DiffusionEngine(self.config)
+
+    @property
+    def last_omni_trace(self) -> MiniOmniTrace | None:
+        return getattr(self.engine, "last_trace", None)
+
+    def generate_ar(self, prompt: str = DEFAULT_PROMPT):
+        if not hasattr(self.engine, "generate_ar"):
+            raise RuntimeError("AR-only generation requires enable_mini_omni=True.")
+        request = OmniRequest(prompt=prompt)
+        return self.engine.generate_ar(request)
 
     @staticmethod
     def preset(name: str) -> OmniSamplingParams:

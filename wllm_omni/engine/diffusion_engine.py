@@ -5,7 +5,7 @@ from wllm_omni.request import OmniRequest
 from wllm_omni.sched.step_scheduler import StepScheduler
 
 
-class OmniEngine:
+class DiffusionEngine:
 
     def __init__(self, config: EngineConfig):
         self.config = config

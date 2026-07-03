@@ -6,6 +6,8 @@ __all__ = [
     "DEFAULT_NEGATIVE_PROMPT",
     "DEFAULT_PROMPT",
     "EngineConfig",
+    "MiniOmniRuntime",
+    "MiniOmniTrace",
     "OmniLLM",
     "OmniOutput",
     "OmniRequest",
@@ -19,6 +21,10 @@ def __getattr__(name: str):
         from wllm_omni import config
 
         return getattr(config, name)
+    if name in {"MiniOmniRuntime", "MiniOmniTrace"}:
+        from wllm_omni.engine import mini_omni_runtime
+
+        return getattr(mini_omni_runtime, name)
     if name == "OmniLLM":
         from wllm_omni.llm import OmniLLM
 

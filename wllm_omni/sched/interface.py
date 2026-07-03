@@ -107,11 +107,6 @@ class SchedulerOutput:
         return len(self.scheduled_reqs)
 
 
-# Backward-compatible aliases. Prefer the generic names above in new code.
-DiffusionRequestStatus = RequestStatus
-DiffusionRequestState = SchedulerRequestState
-DiffusionSchedulerOutput = SchedulerOutput
-
 
 class SchedulerInterface(ABC):
 
