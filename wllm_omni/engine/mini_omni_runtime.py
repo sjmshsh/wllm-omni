@@ -5,7 +5,15 @@ from typing import Callable
 
 from wllm_omni.config import EngineConfig
 from wllm_omni.engine.connectors import ARToDiffusionConnector, CallableARToDiffusionConnector, StageConnector
-from wllm_omni.engine.stage import ARStage, DiffusionStage, StageOutput
+from wllm_omni.engine.pipeline import (
+    DEFAULT_MINI_OMNI_PIPELINE,
+    PipelineConfig,
+    PipelineEdgeConfig,
+    PipelineRegistry,
+    PipelineStageConfig,
+    default_pipeline_registry,
+)
+from wllm_omni.engine.stage import ARStage, DiffusionStage, Stage, StageOutput
 from wllm_omni.engine.stage_graph import StageGraph
 from wllm_omni.engine.stage_scheduler import StageExecutionRecord, StageScheduler, StageSchedulerResult
 from wllm_omni.model_types import ModelParadigm
@@ -25,6 +33,7 @@ class OmniStageRecord:
 @dataclass(slots=True)
 class MiniOmniTrace:
     request_id: str
+    pipeline: str
     stages: list[OmniStageRecord] = field(default_factory=list)
     graph_nodes: list[str] = field(default_factory=list)
 
@@ -41,42 +50,68 @@ class MiniOmniRuntime:
         config: EngineConfig,
         connector: StageConnector | Callable[[OmniRequest, ARTextOutput], OmniRequest] | None = None,
         ar_pipeline: ARPipeline | None = None,
+        registry: PipelineRegistry | None = None,
     ):
         self.config = config
-        self.ar_stage = ARStage(config, pipeline=ar_pipeline)
-        self.diffusion_stage = DiffusionStage(config)
+        self.registry = registry or default_pipeline_registry()
+        self.pipeline = self.registry.get(config.pipeline or DEFAULT_MINI_OMNI_PIPELINE)
         self.connector = self._normalize_connector(connector)
-        self.graph = self._build_default_graph()
+        self.graph = self._build_graph(self.pipeline, ar_pipeline)
         self.stage_scheduler = StageScheduler(self.graph)
         self.last_trace: MiniOmniTrace | None = None
 
     def generate_ar(self, request: OmniRequest) -> ARTextOutput:
-        stage_output, elapsed_s = StageScheduler._run_stage(self.ar_stage, request)
-        self.last_trace = MiniOmniTrace(
-            request_id=request.request_id,
-            stages=[
-                self._make_stage_record_from_stage(
-                    self.ar_stage.name,
-                    self.ar_stage.paradigm,
-                    stage_output,
-                    elapsed_s,
-                )
-            ],
-            graph_nodes=[self.ar_stage.name],
-        )
-        return self._ar_output(stage_output)
+        leaves = self.graph.leaves()
+        if len(leaves) != 1 or leaves[0].stage.paradigm != ModelParadigm.AUTOREGRESSIVE:
+            raise RuntimeError(
+                f"Pipeline {self.pipeline.name!r} is not an AR-only pipeline. "
+                "Use pipeline='ar_text' for AR-only generation."
+            )
+        result = self.stage_scheduler.run(request)
+        self.last_trace = self._make_trace(result)
+        if len(result.final_outputs) != 1:
+            raise RuntimeError(
+                f"AR generation expects one final output from pipeline {self.pipeline.name!r}, "
+                f"got {len(result.final_outputs)}."
+            )
+        try:
+            return self._ar_output(result.final_outputs[0])
+        except TypeError as exc:
+            raise RuntimeError(
+                f"Pipeline {self.pipeline.name!r} does not produce AR text output. "
+                "Use pipeline='ar_text' for AR-only generation."
+            ) from exc
 
     def generate(self, request: OmniRequest) -> list[OmniOutput]:
         result = self.stage_scheduler.run(request)
         self.last_trace = self._make_trace(result)
         return [self._diffusion_output(output) for output in result.final_outputs]
 
-    def _build_default_graph(self) -> StageGraph:
+    def _build_graph(self, pipeline: PipelineConfig, ar_pipeline: ARPipeline | None) -> StageGraph:
         graph = StageGraph()
-        graph.add_node("ar.prompt_bridge", self.ar_stage)
-        graph.add_node("diffusion.wan22_i2v", self.diffusion_stage)
-        graph.add_edge("ar.prompt_bridge", "diffusion.wan22_i2v", self.connector)
+        for stage_config in pipeline.stages:
+            graph.add_node(stage_config.node_id, self._make_stage(stage_config, ar_pipeline))
+        for edge_config in pipeline.edges:
+            graph.add_edge(edge_config.source, edge_config.target, self._make_connector(edge_config))
         return graph
+
+    def _make_stage(self, stage_config: PipelineStageConfig, ar_pipeline: ARPipeline | None) -> Stage:
+        if stage_config.paradigm == ModelParadigm.AUTOREGRESSIVE:
+            return ARStage(self.config, pipeline=ar_pipeline)
+        if stage_config.paradigm == ModelParadigm.DIFFUSION:
+            return DiffusionStage(self.config)
+        raise ValueError(
+            f"Pipeline {self.pipeline.name!r} stage {stage_config.node_id!r} "
+            f"uses unsupported paradigm={stage_config.paradigm!r}."
+        )
+
+    def _make_connector(self, edge_config: PipelineEdgeConfig) -> StageConnector:
+        if edge_config.connector == "ar_to_diffusion":
+            return self.connector
+        raise ValueError(
+            f"Pipeline {self.pipeline.name!r} edge {edge_config.source!r}->{edge_config.target!r} "
+            f"uses unsupported connector={edge_config.connector!r}."
+        )
 
     @staticmethod
     def _normalize_connector(
@@ -91,6 +126,7 @@ class MiniOmniRuntime:
     def _make_trace(self, result: StageSchedulerResult) -> MiniOmniTrace:
         return MiniOmniTrace(
             request_id=result.root_request_id,
+            pipeline=self.pipeline.name,
             stages=[self._make_stage_record_from_record(record) for record in result.records],
             graph_nodes=[record.node_id for record in result.records],
         )

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-__all__ = ["DiffusionEngine", "ModelRunner", "StageGraph", "StageScheduler"]
+__all__ = ["DiffusionEngine", "ModelRunner", "PipelineConfig", "PipelineRegistry", "StageGraph", "StageScheduler"]
 
 
 def __getattr__(name: str):
@@ -12,6 +12,14 @@ def __getattr__(name: str):
         from wllm_omni.engine.model_runner import ModelRunner
 
         return ModelRunner
+    if name == "PipelineConfig":
+        from wllm_omni.engine.pipeline import PipelineConfig
+
+        return PipelineConfig
+    if name == "PipelineRegistry":
+        from wllm_omni.engine.pipeline import PipelineRegistry
+
+        return PipelineRegistry
     if name == "StageGraph":
         from wllm_omni.engine.stage_graph import StageGraph
 

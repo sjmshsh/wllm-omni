@@ -76,9 +76,6 @@ class DiffusionStage(Stage):
         return StageOutput(
             request_id=request.request_id,
             data=outputs[0],
-            metadata={
-                "bridge": "ar_text_to_diffusion_prompt",
-            },
         )
 
     def _engine(self) -> DiffusionEngine:

@@ -15,7 +15,8 @@ class OmniLLM:
 
     def __init__(self, model: str = DEFAULT_MODEL, **kwargs):
         self.config = EngineConfig(model=model, **kwargs)
-        if self.config.enable_mini_omni:
+        use_mini_omni_runtime = self.config.enable_mini_omni or self.config.pipeline is not None
+        if use_mini_omni_runtime:
             self.engine = MiniOmniRuntime(self.config)
         else:
             self.engine = DiffusionEngine(self.config)
