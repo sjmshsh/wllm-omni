@@ -92,7 +92,7 @@ class ModelRunner:
         # Keep heavy diffusion imports out of ModelRunner import time so tests and
         # custom executors can use the runner without loading model dependencies.
         from wllm_omni.models.diffusion_executor import DiffusionExecutor
-        from wllm_omni.models.wan22 import Wan22I2VPipeline
+        from wllm_omni.models.wan22_pipeline import Wan22I2VPipeline
 
         return [DiffusionExecutor(Wan22I2VPipeline(config))]
 

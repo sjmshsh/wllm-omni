@@ -6,7 +6,7 @@ import torch
 
 from wllm_omni.model_types import ModelParadigm
 from wllm_omni.models import ModelExecutor, supports_step_execution
-from wllm_omni.models.wan22 import Wan22I2VPipeline
+from wllm_omni.models.wan22_pipeline import Wan22I2VPipeline
 from wllm_omni.profiler import RequestProfiler
 from wllm_omni.request import OmniRequest
 from wllm_omni.worker.utils import (

@@ -72,6 +72,12 @@ def _format_elapsed_ms(elapsed_s) -> str:
     return f"{float(elapsed_s) * 1000.0:.2f}"
 
 
+def _format_ms(value) -> str:
+    if value is None:
+        return "None"
+    return f"{float(value):.2f}"
+
+
 def _print_mini_omni_trace(trace) -> None:
     if trace is None:
         return
@@ -90,8 +96,16 @@ def _print_mini_omni_trace(trace) -> None:
                 f"ar.model={metadata.get('model')} "
                 f"ar.mode={metadata.get('mode')} "
                 f"ar.input_tokens={metadata.get('input_tokens')} "
+                f"ar.prefill_tokens={metadata.get('prefill_tokens')} "
                 f"ar.output_tokens={metadata.get('output_tokens')} "
-                f"ar.elapsed_ms={elapsed_text}",
+                f"ar.elapsed_ms={elapsed_text} "
+                f"ar.prefill_ms={_format_elapsed_ms(metadata.get('prefill_elapsed_s'))} "
+                f"ar.decode_ms={_format_elapsed_ms(metadata.get('decode_elapsed_s'))} "
+                f"ar.ttft_ms={_format_elapsed_ms(metadata.get('ttft_s'))} "
+                f"ar.decode_steps={metadata.get('decode_model_steps')} "
+                f"ar.decode_step_mean_ms={_format_ms(metadata.get('decode_step_mean_ms'))} "
+                f"ar.kv_cache={metadata.get('kv_cache_enabled')} "
+                f"ar.kv_cache_type={metadata.get('kv_cache_type')}",
                 flush=True,
             )
         elif stage.name == "diffusion.wan22_i2v":

@@ -27,15 +27,15 @@ class ARState:
 
 
 class ARExecutor(ModelExecutor):
-    """Minimal AR executor used by the first mini-Omni runtime.
+    """AR executor used by the mini-Omni runtime.
 
-    This is intentionally a deterministic text stage, not a real LLM backend.
-    It validates the cross-stage runtime contract before KV cache, decode
-    scheduling, or streaming token generation are introduced.
+    The executor still runs at request level, but the pipeline underneath now
+    exposes prefill/decode/KV-cache boundaries. Streaming is intentionally not
+    advertised until tokens are emitted across the scheduler boundary.
     """
 
     paradigm = ModelParadigm.AUTOREGRESSIVE
-    capabilities = frozenset({ExecutorCapability.STEPWISE, ExecutorCapability.STREAMING})
+    capabilities = frozenset({ExecutorCapability.STEPWISE, ExecutorCapability.KV_CACHE})
 
     def __init__(self, pipeline: ARPipeline | None = None):
         self.pipeline = pipeline or IdentityARPipeline()
@@ -55,7 +55,7 @@ class ARExecutor(ModelExecutor):
         return ForwardBatch(
             paradigm=self.paradigm,
             req_ids=[state.sched_req_id for state in states],
-            phase=ExecutionPhase.FINALIZE,
+            phase=ExecutionPhase.STEP,
             payload=[self._state_payload(state) for state in states],
         )
 
