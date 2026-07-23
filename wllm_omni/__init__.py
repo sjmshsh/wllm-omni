@@ -9,6 +9,8 @@ __all__ = [
     "MiniOmniRuntime",
     "MiniOmniTrace",
     "OmniLLM",
+    "PipelineConfig",
+    "PipelineRegistry",
     "OmniOutput",
     "OmniRequest",
     "OmniSamplingParams",
@@ -29,6 +31,10 @@ def __getattr__(name: str):
         from wllm_omni.llm import OmniLLM
 
         return OmniLLM
+    if name in {"PipelineConfig", "PipelineRegistry"}:
+        from wllm_omni.engine import pipeline
+
+        return getattr(pipeline, name)
     if name == "OmniOutput":
         from wllm_omni.outputs import OmniOutput
 

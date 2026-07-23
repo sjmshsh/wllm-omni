@@ -40,5 +40,6 @@ class EngineConfig:
     enable_profiling: bool = False
     probe_condition_cache: bool = False
     enable_mini_omni: bool = False
+    pipeline: str | None = None
     ar_model: str | None = None
     ar_max_new_tokens: int = 64

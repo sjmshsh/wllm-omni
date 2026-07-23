@@ -137,8 +137,12 @@ class StageScheduler:
         metadata["paradigm"] = node.stage.paradigm.value
         in_edges = self.graph.in_edges(node.node_id)
         if in_edges:
-            metadata.setdefault("source_node", in_edges[0].source)
+            edge = in_edges[0]
+            metadata.setdefault("bridge", getattr(edge.connector, "name", type(edge.connector).__name__))
+            metadata.setdefault("source_node", edge.source)
             metadata.setdefault("source_request_id", root_request.request_id)
+        else:
+            metadata.setdefault("bridge", "direct_request")
         return StageExecutionRecord(
             node_id=node.node_id,
             stage_name=node.stage.name,

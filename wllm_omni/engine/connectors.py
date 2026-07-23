@@ -23,6 +23,8 @@ class ConnectorContext:
 class StageConnector(ABC):
     """Transforms an upstream stage output into a downstream stage request."""
 
+    name = "stage_connector"
+
     @abstractmethod
     def connect(self, context: ConnectorContext) -> OmniRequest:
         pass
@@ -30,6 +32,8 @@ class StageConnector(ABC):
 
 class ARToDiffusionConnector(StageConnector):
     """Bridge AR text output into a Wan image-to-video diffusion request."""
+
+    name = "ar_text_to_diffusion_prompt"
 
     def connect(self, context: ConnectorContext) -> OmniRequest:
         if not isinstance(context.source_output.data, ARTextOutput):
@@ -49,6 +53,8 @@ class ARToDiffusionConnector(StageConnector):
 
 class CallableARToDiffusionConnector(StageConnector):
     """Compatibility wrapper for older AR-output connector callables."""
+
+    name = "callable_ar_to_diffusion"
 
     def __init__(self, connector: Callable[[OmniRequest, ARTextOutput], OmniRequest]):
         self.connector = connector

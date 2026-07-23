@@ -49,7 +49,23 @@ class ARStage(Stage):
                 "mode": ar_output.metadata.get("mode"),
                 "model": ar_output.metadata.get("model"),
                 "input_tokens": ar_output.metadata.get("input_tokens"),
-                "output_tokens": ar_output.metadata.get("token_count", len(ar_output.tokens)),
+                "prefill_tokens": ar_output.metadata.get("prefill_tokens"),
+                "output_tokens": ar_output.metadata.get("output_tokens", ar_output.metadata.get("token_count", len(ar_output.tokens))),
+                "generated_tokens": ar_output.metadata.get("generated_tokens", ar_output.metadata.get("token_count", len(ar_output.tokens))),
+                "prefill_elapsed_s": ar_output.metadata.get("prefill_elapsed_s"),
+                "decode_elapsed_s": ar_output.metadata.get("decode_elapsed_s"),
+                "ttft_s": ar_output.metadata.get("ttft_s"),
+                "decode_model_steps": ar_output.metadata.get("decode_model_steps"),
+                "decode_model_calls": ar_output.metadata.get("decode_model_calls", ar_output.metadata.get("decode_model_steps")),
+                "decode_scheduler_steps": ar_output.metadata.get("decode_scheduler_steps"),
+                "scheduler_steps": ar_output.metadata.get("scheduler_steps"),
+                "prefill_steps": ar_output.metadata.get("prefill_steps"),
+                "decode_step_mean_ms": ar_output.metadata.get("decode_step_mean_ms"),
+                "decode_step_max_ms": ar_output.metadata.get("decode_step_max_ms"),
+                "stopped_by_eos": ar_output.metadata.get("stopped_by_eos"),
+                "stop_reason": ar_output.metadata.get("stop_reason"),
+                "kv_cache_enabled": ar_output.metadata.get("kv_cache_enabled"),
+                "kv_cache_type": ar_output.metadata.get("kv_cache_type"),
             },
         )
 
@@ -76,9 +92,6 @@ class DiffusionStage(Stage):
         return StageOutput(
             request_id=request.request_id,
             data=outputs[0],
-            metadata={
-                "bridge": "ar_text_to_diffusion_prompt",
-            },
         )
 
     def _engine(self) -> DiffusionEngine:
