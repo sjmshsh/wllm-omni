@@ -23,8 +23,8 @@ PipelineConfig / PipelineRegistry
 
 - Wan2.2 image-to-video diffusion 执行
 - Qwen CausalLM AR stage
-- AR prefill / decode 最小执行边界
-- AR 内部 `past_key_values` KV cache 推进
+- AR scheduler-visible prefill / decode step
+- AR request state 内部持有 `past_key_values`
 - `ar_text` / `wan_i2v` / `qwen_to_wan_i2v` 三种固定 pipeline
 - 显式 `StageGraph`
 - 顶层 `StageScheduler`
@@ -100,7 +100,7 @@ MiniOmniRuntime
 | Paradigm-specific model logic | `ARExecutor` / `DiffusionExecutor`   | 已有                             |
 | Distributed connector         | 暂无                                     | 目前只在进程内传对象             |
 | Stage-level batching          | 暂无                                     | 后续工作                         |
-| AR KV cache / streaming       | `past_key_values` 内部推进              | 暂无调度层 KV / streaming        |
+| AR KV cache / streaming       | request state 持有 `past_key_values`    | 暂无 KV block manager / streaming |
 | Diffusion step execution      | 暂无                                     | 后续工作                         |
 
 结论：当前架构已经是 **类 vLLM-Omni 的 pipeline runtime 雏形**，但还不是完整 vLLM-Omni。差距主要在配置系统、批处理、KV cache、streaming、分布式 connector 和 diffusion step execution。
@@ -237,8 +237,11 @@ CUDA_VISIBLE_DEVICES=0 python example_wan22_i2v.py \
 
 - `ar.elapsed_ms` 表示 AR stage 执行耗时
 - `ar.prefill_ms` 表示 AR prompt prefill 耗时
-- `ar.decode_ms` 表示 AR decode loop 耗时
+- `ar.decode_ms` 表示 AR decode model calls 总耗时
 - `ar.ttft_ms` 当前等价于 prefill 完成到首 token 可用的耗时
+- `ar.scheduler_steps` 表示 AR request 被 scheduler 调度的总次数
+- `ar.prefill_steps` 表示 prefill 调度次数
+- `ar.decode_scheduler_steps` 表示 decode step 调度次数
 - `ar.kv_cache` 表示 AR backend 是否返回并使用 `past_key_values`
 - `diffusion.load_ms` 表示首次加载 diffusion engine 的耗时
 - `diffusion.elapsed_ms` 表示 diffusion stage 真正执行耗时
@@ -253,27 +256,27 @@ CUDA_VISIBLE_DEVICES=0 python example_wan22_i2v.py \
 当前已完成：
 
 - 明确 `ARPrefillOutput` / `ARDecodeOutput` / `ARTextOutput`
-- 拆分 `prefill()` / `decode()` / `finalize()` 接口
-- Transformers AR backend 使用显式 greedy decode loop
+- 拆分 `prefill()` / `decode_step()` / `finalize()` 接口
+- Transformers AR backend 使用显式 greedy decode step
+- `ARState` 持有 prefill、decode、output、scheduler step 计数
 - decode 阶段复用 `past_key_values`
-- trace 输出 `prefill_ms` / `decode_ms` / `ttft_ms` / `decode_steps` / `kv_cache`
-- 保持 `Scheduler -> ModelRunner -> ARExecutor` 路径不变
+- `RequestScheduler -> ModelRunner -> ARExecutor` 能多轮推进同一个 AR request
+- trace 输出 `prefill_ms` / `decode_ms` / `ttft_ms` / `scheduler_steps` / `decode_scheduler_steps` / `kv_cache`
 
 当前边界：
 
-- KV cache 仍由单请求 AR pipeline 内部持有
-- Scheduler 尚不能感知 KV block、decode token、batchable decode step
+- KV cache 已在 request state 内部推进，但还不是 vLLM 式 block manager
+- Scheduler 能看到 request 级 prefill/decode step，但还不能做 token-level batch 合并
 - 还没有 streaming token 输出
 
-### Step 2: AR 调度层 KV cache 与 streaming
+### Step 2: AR KV block 管理、batching 与 streaming
 
-目标：让 AR stage 从单请求内部 decode loop 走向可调度的 token runtime。
+目标：让 AR stage 从单请求 stepwise runtime 走向可批处理的 token runtime。
 
 计划：
 
-- 引入 AR request decode state
-- 让 scheduler 能区分 prefill / decode request
-- 将 KV cache 从 pipeline 内部状态提升到 executor/request state
+- 引入最小 KV cache manager / block metadata
+- 让 scheduler 区分 prefill batch 与 decode batch
 - 支持单请求 streaming token 输出
 - 再扩展到多请求 decode batching
 

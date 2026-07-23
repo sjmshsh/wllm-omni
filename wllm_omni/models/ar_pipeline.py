@@ -41,7 +41,12 @@ class ARDecodeOutput:
     elapsed_s: float = 0.0
     step_elapsed_s: list[float] = field(default_factory=list)
     stopped_by_eos: bool = False
+    stop_reason: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def finished(self) -> bool:
+        return bool(self.metadata.get("finished", False))
 
 
 class ARPipeline(ABC):
@@ -56,8 +61,27 @@ class ARPipeline(ABC):
     def prefill(self, request: OmniRequest) -> ARPrefillOutput:
         pass
 
-    @abstractmethod
+    def init_decode(self) -> ARDecodeOutput:
+        return ARDecodeOutput(token_ids=[], tokens=[], text="")
+
     def decode(self, request: OmniRequest, prefill: ARPrefillOutput) -> ARDecodeOutput:
+        decode = self.init_decode()
+        while not decode.finished:
+            before_tokens = len(decode.token_ids)
+            self.decode_step(request, prefill, decode)
+            if len(decode.token_ids) == before_tokens and not decode.finished:
+                decode.metadata["finished"] = True
+                decode.stop_reason = "no_progress"
+                decode.metadata["stop_reason"] = decode.stop_reason
+        return decode
+
+    @abstractmethod
+    def decode_step(
+        self,
+        request: OmniRequest,
+        prefill: ARPrefillOutput,
+        decode: ARDecodeOutput,
+    ) -> ARDecodeOutput:
         pass
 
     @abstractmethod
@@ -86,13 +110,23 @@ class IdentityARPipeline(ARPipeline):
             metadata={"kv_cache_enabled": False},
         )
 
-    def decode(self, request: OmniRequest, prefill: ARPrefillOutput) -> ARDecodeOutput:
-        return ARDecodeOutput(
-            token_ids=list(prefill.input_token_ids),
-            tokens=list(prefill.input_tokens),
-            text=prefill.prompt,
-            metadata={"decode_model_steps": 0},
-        )
+    def decode_step(
+        self,
+        request: OmniRequest,
+        prefill: ARPrefillOutput,
+        decode: ARDecodeOutput,
+    ) -> ARDecodeOutput:
+        decode.token_ids[:] = list(prefill.input_token_ids)
+        decode.tokens[:] = list(prefill.input_tokens)
+        decode.text = prefill.prompt
+        decode.stop_reason = "identity"
+        decode.metadata.update({
+            "finished": True,
+            "decode_model_steps": 0,
+            "decode_scheduler_steps": 1,
+            "stop_reason": decode.stop_reason,
+        })
+        return decode
 
     def finalize(
         self,
@@ -108,12 +142,17 @@ class IdentityARPipeline(ARPipeline):
             metadata={
                 "mode": "identity_prompt_bridge",
                 "input_tokens": len(prefill.input_token_ids),
+                "prefill_tokens": len(prefill.input_token_ids),
                 "token_count": len(decode.token_ids),
+                "generated_tokens": len(decode.token_ids),
                 "prefill_elapsed_s": prefill.elapsed_s,
                 "decode_elapsed_s": decode.elapsed_s,
                 "ttft_s": prefill.elapsed_s,
                 "kv_cache_enabled": False,
                 "decode_model_steps": 0,
+                "decode_model_calls": 0,
+                "decode_scheduler_steps": decode.metadata.get("decode_scheduler_steps", 1),
+                "stop_reason": decode.stop_reason,
             },
         )
 
@@ -199,74 +238,71 @@ class TransformersARPipeline(ARPipeline):
             },
         )
 
-    def decode(self, request: OmniRequest, prefill: ARPrefillOutput) -> ARDecodeOutput:
+    def decode_step(
+        self,
+        request: OmniRequest,
+        prefill: ARPrefillOutput,
+        decode: ARDecodeOutput,
+    ) -> ARDecodeOutput:
         import torch
 
-        generated_token_ids: list[int] = []
-        step_elapsed_s: list[float] = []
-        stopped_by_eos = False
+        decode.metadata["decode_scheduler_steps"] = int(decode.metadata.get("decode_scheduler_steps", 0)) + 1
         next_token_id = prefill.next_token_id
-        past_key_values = prefill.kv_cache
+        if next_token_id is None:
+            self._finish_decode(decode, "no_token")
+            return decode
+        if self._is_eos_token(next_token_id):
+            decode.stopped_by_eos = True
+            self._finish_decode(decode, "eos")
+            return decode
+
+        decode.token_ids.append(next_token_id)
+        decode.tokens = self.tokenizer.convert_ids_to_tokens(decode.token_ids)
+        decode.text = self.tokenizer.decode(decode.token_ids, skip_special_tokens=True).strip()
+
+        if len(decode.token_ids) >= self.max_new_tokens:
+            self._finish_decode(decode, "max_tokens")
+            return decode
+
+        input_ids = torch.tensor([[next_token_id]], dtype=torch.long, device=self.device)
         attention_mask = prefill.attention_mask
-
-        self._sync_device()
-        decode_start = perf_counter()
-        for step_index in range(self.max_new_tokens):
-            if next_token_id is None:
-                break
-            if self._is_eos_token(next_token_id):
-                stopped_by_eos = True
-                break
-
-            generated_token_ids.append(next_token_id)
-            if step_index == self.max_new_tokens - 1:
-                break
-
-            input_ids = torch.tensor([[next_token_id]], dtype=torch.long, device=self.device)
-            if attention_mask is None:
-                attention_mask = torch.ones(
-                    (1, len(prefill.input_token_ids) + len(generated_token_ids) - 1),
-                    dtype=torch.long,
-                    device=self.device,
-                )
-            attention_mask = torch.cat(
-                [
-                    attention_mask,
-                    torch.ones((attention_mask.shape[0], 1), dtype=attention_mask.dtype, device=attention_mask.device),
-                ],
-                dim=-1,
+        if attention_mask is None:
+            attention_mask = torch.ones(
+                (1, len(prefill.input_token_ids) + len(decode.token_ids) - 1),
+                dtype=torch.long,
+                device=self.device,
             )
-
-            self._sync_device()
-            step_start = perf_counter()
-            with torch.no_grad():
-                model_output = self.model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    past_key_values=past_key_values,
-                    use_cache=True,
-                )
-            self._sync_device()
-            step_elapsed_s.append(perf_counter() - step_start)
-            past_key_values = getattr(model_output, "past_key_values", None)
-            next_token_id = int(torch.argmax(model_output.logits[:, -1, :], dim=-1)[0].item())
+        attention_mask = torch.cat(
+            [
+                attention_mask,
+                torch.ones((attention_mask.shape[0], 1), dtype=attention_mask.dtype, device=attention_mask.device),
+            ],
+            dim=-1,
+        )
 
         self._sync_device()
-        elapsed_s = perf_counter() - decode_start
-        text = self.tokenizer.decode(generated_token_ids, skip_special_tokens=True).strip()
-        tokens = self.tokenizer.convert_ids_to_tokens(generated_token_ids)
-        return ARDecodeOutput(
-            token_ids=generated_token_ids,
-            tokens=tokens,
-            text=text,
-            elapsed_s=elapsed_s,
-            step_elapsed_s=step_elapsed_s,
-            stopped_by_eos=stopped_by_eos,
-            metadata={
-                "decode_model_steps": len(step_elapsed_s),
-                "decode_tokens": len(generated_token_ids),
-            },
-        )
+        step_start = perf_counter()
+        with torch.no_grad():
+            model_output = self.model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                past_key_values=prefill.kv_cache,
+                use_cache=True,
+            )
+        self._sync_device()
+        step_elapsed_s = perf_counter() - step_start
+        decode.step_elapsed_s.append(step_elapsed_s)
+        decode.elapsed_s += step_elapsed_s
+        prefill.kv_cache = getattr(model_output, "past_key_values", None)
+        prefill.attention_mask = attention_mask
+        prefill.next_token_id = int(torch.argmax(model_output.logits[:, -1, :], dim=-1)[0].item())
+        decode.metadata["decode_model_steps"] = len(decode.step_elapsed_s)
+        decode.metadata["decode_tokens"] = len(decode.token_ids)
+
+        if self._is_eos_token(prefill.next_token_id):
+            decode.stopped_by_eos = True
+            self._finish_decode(decode, "eos")
+        return decode
 
     def finalize(
         self,
@@ -288,13 +324,17 @@ class TransformersARPipeline(ARPipeline):
                 "input_tokens": len(prefill.input_token_ids),
                 "prefill_tokens": len(prefill.input_token_ids),
                 "token_count": len(decode.token_ids),
+                "generated_tokens": len(decode.token_ids),
                 "prefill_elapsed_s": prefill.elapsed_s,
                 "decode_elapsed_s": decode.elapsed_s,
                 "decode_step_mean_ms": self._mean_ms(decode.step_elapsed_s),
                 "decode_step_max_ms": self._max_ms(decode.step_elapsed_s),
                 "decode_model_steps": decode.metadata.get("decode_model_steps", len(decode.step_elapsed_s)),
+                "decode_model_calls": decode.metadata.get("decode_model_steps", len(decode.step_elapsed_s)),
+                "decode_scheduler_steps": decode.metadata.get("decode_scheduler_steps"),
                 "ttft_s": prefill.elapsed_s,
                 "stopped_by_eos": decode.stopped_by_eos,
+                "stop_reason": decode.stop_reason,
                 "kv_cache_enabled": prefill.metadata.get("kv_cache_enabled", False),
                 "kv_cache_type": prefill.metadata.get("kv_cache_type"),
             },
@@ -321,6 +361,13 @@ class TransformersARPipeline(ARPipeline):
             "Keep the main subject, scene, motion, and style. Return only the rewritten prompt.\n\n"
             f"Request: {prompt.strip()}\nPrompt:"
         )
+
+    def _finish_decode(self, decode: ARDecodeOutput, stop_reason: str) -> None:
+        decode.stop_reason = stop_reason
+        decode.metadata["finished"] = True
+        decode.metadata["stop_reason"] = stop_reason
+        decode.metadata["decode_model_steps"] = len(decode.step_elapsed_s)
+        decode.metadata["decode_tokens"] = len(decode.token_ids)
 
     def _sync_device(self) -> None:
         if self.device.type != "cuda":
