@@ -20,6 +20,18 @@ class ARTextOutput:
 
 
 @dataclass(slots=True)
+class ARStepOutput:
+    request_id: str
+    token_id: int | None
+    token: str
+    text_delta: str
+    step_index: int
+    finished: bool = False
+    stop_reason: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class ARPrefillOutput:
     """Prompt-side AR state produced before decode."""
 

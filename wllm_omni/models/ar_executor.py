@@ -9,6 +9,7 @@ from wllm_omni.models.ar_pipeline import (
     ARDecodeOutput,
     ARPipeline,
     ARPrefillOutput,
+    ARStepOutput,
     ARTextOutput,
     IdentityARPipeline,
 )
@@ -31,6 +32,7 @@ class ARState:
     prefill: ARPrefillOutput | None = None
     decode: ARDecodeOutput | None = None
     output: ARTextOutput | None = None
+    last_step_output: ARStepOutput | None = None
     scheduler_steps: int = 0
     prefill_steps: int = 0
     decode_steps: int = 0
@@ -55,7 +57,11 @@ class ARExecutor(ModelExecutor):
     """
 
     paradigm = ModelParadigm.AUTOREGRESSIVE
-    capabilities = frozenset({ExecutorCapability.STEPWISE, ExecutorCapability.KV_CACHE})
+    capabilities = frozenset({
+        ExecutorCapability.STEPWISE,
+        ExecutorCapability.KV_CACHE,
+        ExecutorCapability.STREAMING,
+    })
 
     def __init__(self, pipeline: ARPipeline | None = None):
         self.pipeline = pipeline or IdentityARPipeline()
@@ -127,6 +133,16 @@ class ARExecutor(ModelExecutor):
             if item is None:
                 continue
             payload = self._state_payload(state)
+            if payload.last_step_output is not None:
+                results.append(
+                    RunnerOutput(
+                        req_id=state.sched_req_id,
+                        step_index=item.step_index,
+                        finished=False,
+                        result=payload.last_step_output,
+                        error=item.error,
+                    )
+                )
             results.append(
                 RunnerOutput(
                     req_id=state.sched_req_id,
@@ -146,6 +162,7 @@ class ARExecutor(ModelExecutor):
         state.prefill_steps += 1
         state.prefill = self.pipeline.prefill(state.request)
         state.decode = self.pipeline.init_decode()
+        state.last_step_output = None
         return RunnerOutput(req_id=req_id, step_index=state.scheduler_steps, finished=False)
 
     def _run_decode_step(self, req_id: str, state: ARState) -> RunnerOutput:
@@ -155,7 +172,9 @@ class ARExecutor(ModelExecutor):
             return RunnerOutput(req_id=req_id, step_index=state.scheduler_steps, finished=True, error="AR decode before prefill.")
         if state.decode is None:
             state.decode = self.pipeline.init_decode()
+        before_len = len(state.decode.token_ids)
         self.pipeline.decode_step(state.request, state.prefill, state.decode)
+        state.last_step_output = self._make_step_output(state, before_len)
         if state.decode.finished:
             state.output = self._finalize_output(state)
             return RunnerOutput(req_id=req_id, step_index=state.scheduler_steps, finished=True)
@@ -179,6 +198,39 @@ class ARExecutor(ModelExecutor):
             "decode_scheduler_steps": state.decode_steps,
         })
         return output
+
+    def _make_step_output(self, state: ARState, before_len: int) -> ARStepOutput | None:
+        if state.decode is None:
+            return None
+        token_id: int | None = None
+        token = ""
+        text_delta = ""
+        if len(state.decode.token_ids) > before_len:
+            token_id = state.decode.token_ids[-1]
+            token = state.decode.tokens[-1] if state.decode.tokens else ""
+            if hasattr(self.pipeline, "tokenizer"):
+                previous_text = self.pipeline.tokenizer.decode(
+                    state.decode.token_ids[:before_len],
+                    skip_special_tokens=True,
+                )
+            else:
+                previous_text = ""
+            current_text = state.decode.text
+            text_delta = current_text[len(previous_text):] if current_text.startswith(previous_text) else token
+        return ARStepOutput(
+            request_id=state.request.request_id,
+            token_id=token_id,
+            token=token,
+            text_delta=text_delta,
+            step_index=state.scheduler_steps,
+            finished=state.decode.finished,
+            stop_reason=state.decode.stop_reason,
+            metadata={
+                "decode_scheduler_steps": state.decode_steps,
+                "generated_tokens": len(state.decode.token_ids),
+                "decode_model_calls": len(state.decode.step_elapsed_s),
+            },
+        )
 
     @staticmethod
     def _phase_for_state(state: ARState) -> ExecutionPhase:

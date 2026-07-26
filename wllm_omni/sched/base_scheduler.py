@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from collections import deque
+from typing import TYPE_CHECKING
 
-from wllm_omni.request import OmniRequest
+if TYPE_CHECKING:
+    from wllm_omni.request import OmniRequest
+
 from wllm_omni.sched.interface import (
     RequestStatus,
     ScheduledRequest,

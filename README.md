@@ -42,7 +42,7 @@ PipelineConfig / PipelineRegistry
 - stage-level batching
 - 调度层 AR KV cache 管理
 - AR continuous batching
-- streaming token 输出
+- 服务端 streaming API
 - 多 session 调度
 - pipeline overlap
 - diffusion step execution
@@ -100,10 +100,10 @@ MiniOmniRuntime
 | Paradigm-specific model logic | `ARExecutor` / `DiffusionExecutor`   | 已有                             |
 | Distributed connector         | 暂无                                     | 目前只在进程内传对象             |
 | Stage-level batching          | 暂无                                     | 后续工作                         |
-| AR KV cache / streaming       | request state 持有 `past_key_values`    | 暂无 KV block manager / streaming |
+| AR KV cache / streaming       | request state 持有 `past_key_values`，支持单请求 token streaming | 暂无 KV block manager / continuous batching |
 | Diffusion step execution      | 暂无                                     | 后续工作                         |
 
-结论：当前架构已经是 **类 vLLM-Omni 的 pipeline runtime 雏形**，但还不是完整 vLLM-Omni。差距主要在配置系统、批处理、KV cache、streaming、分布式 connector 和 diffusion step execution。
+结论：当前架构已经是 **类 vLLM-Omni 的 pipeline runtime 雏形**，但还不是完整 vLLM-Omni。差距主要在配置系统、批处理、KV block 管理、服务端 streaming、分布式 connector 和 diffusion step execution。
 
 ## Pipeline 选择
 
@@ -190,6 +190,22 @@ python example_wan22_i2v.py \
   --prompt "A cat wearing sunglasses sits on a surfboard at the beach."
 ```
 
+### AR-only streaming
+
+```bash
+python example_wan22_i2v.py \
+  --pipeline ar_text \
+  --ar-model ./models/Qwen2.5-0.5B-Instruct \
+  --stream \
+  --prompt "A cat wearing sunglasses sits on a surfboard at the beach."
+```
+
+说明：
+
+- `--stream` 目前只支持 `--pipeline ar_text`
+- token delta 仍然经过 `RequestScheduler -> ModelRunner -> ARExecutor`
+- 不是 CLI 旁路模拟输出
+
 ### Diffusion-only
 
 ```bash
@@ -267,9 +283,9 @@ CUDA_VISIBLE_DEVICES=0 python example_wan22_i2v.py \
 
 - KV cache 已在 request state 内部推进，但还不是 vLLM 式 block manager
 - Scheduler 能看到 request 级 prefill/decode step，但还不能做 token-level batch 合并
-- 还没有 streaming token 输出
+- 支持单请求 streaming token 输出
 
-### Step 2: AR KV block 管理、batching 与 streaming
+### Step 2: AR KV block 管理与 batching
 
 目标：让 AR stage 从单请求 stepwise runtime 走向可批处理的 token runtime。
 
@@ -277,7 +293,7 @@ CUDA_VISIBLE_DEVICES=0 python example_wan22_i2v.py \
 
 - 引入最小 KV cache manager / block metadata
 - 让 scheduler 区分 prefill batch 与 decode batch
-- 支持单请求 streaming token 输出
+- 把当前单请求 streaming 扩展为服务端 stream channel
 - 再扩展到多请求 decode batching
 
 ### Step 3: AR 与 Diffusion 更好配合

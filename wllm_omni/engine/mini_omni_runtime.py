@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
+from time import perf_counter
 from typing import Callable
 
 from wllm_omni.config import EngineConfig
@@ -17,7 +19,7 @@ from wllm_omni.engine.stage import ARStage, DiffusionStage, Stage, StageOutput
 from wllm_omni.engine.stage_graph import StageGraph
 from wllm_omni.engine.stage_scheduler import StageExecutionRecord, StageScheduler, StageSchedulerResult
 from wllm_omni.model_types import ModelParadigm
-from wllm_omni.models.ar_pipeline import ARPipeline, ARTextOutput
+from wllm_omni.models.ar_pipeline import ARPipeline, ARStepOutput, ARTextOutput
 from wllm_omni.outputs import OmniOutput
 from wllm_omni.request import OmniRequest
 
@@ -81,6 +83,41 @@ class MiniOmniRuntime:
                 f"Pipeline {self.pipeline.name!r} does not produce AR text output. "
                 "Use pipeline='ar_text' for AR-only generation."
             ) from exc
+
+    def generate_ar_stream(self, request: OmniRequest) -> Iterator[ARStepOutput]:
+        leaves = self.graph.leaves()
+        if len(leaves) != 1 or leaves[0].stage.paradigm != ModelParadigm.AUTOREGRESSIVE:
+            raise RuntimeError(
+                f"Pipeline {self.pipeline.name!r} is not an AR-only pipeline. "
+                "Use pipeline='ar_text' for AR streaming."
+            )
+        node = leaves[0]
+        if not isinstance(node.stage, ARStage):
+            raise RuntimeError(f"Pipeline {self.pipeline.name!r} leaf is not an ARStage.")
+
+        start = perf_counter()
+        for step_output in node.stage.engine.generate_stream(request):
+            yield step_output
+
+        ar_output = node.stage.engine.last_output
+        if ar_output is None:
+            raise RuntimeError("AR streaming finished without final output.")
+        metadata = ARStage.metadata_from_output(ar_output)
+        metadata["elapsed_s"] = perf_counter() - start
+        metadata["bridge"] = "direct_request"
+        self.last_trace = MiniOmniTrace(
+            request_id=request.request_id,
+            pipeline=self.pipeline.name,
+            stages=[
+                OmniStageRecord(
+                    name=node.stage.name,
+                    paradigm=node.stage.paradigm,
+                    request_id=request.request_id,
+                    metadata=metadata,
+                )
+            ],
+            graph_nodes=[node.node_id],
+        )
 
     def generate(self, request: OmniRequest) -> list[OmniOutput]:
         result = self.stage_scheduler.run(request)

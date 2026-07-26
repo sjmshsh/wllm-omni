@@ -31,6 +31,12 @@ class OmniLLM:
         request = OmniRequest(prompt=prompt)
         return self.engine.generate_ar(request)
 
+    def generate_ar_stream(self, prompt: str = DEFAULT_PROMPT):
+        if not hasattr(self.engine, "generate_ar_stream"):
+            raise RuntimeError("AR streaming requires enable_mini_omni=True and pipeline='ar_text'.")
+        request = OmniRequest(prompt=prompt)
+        yield from self.engine.generate_ar_stream(request)
+
     @staticmethod
     def preset(name: str) -> OmniSamplingParams:
         if name not in PRESETS:
