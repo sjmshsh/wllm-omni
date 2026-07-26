@@ -24,7 +24,8 @@ PipelineConfig / PipelineRegistry
 - Wan2.2 image-to-video diffusion 执行
 - Qwen CausalLM AR stage
 - AR scheduler-visible prefill / decode step
-- AR request state 内部持有 `past_key_values`
+- AR request state 内部持有 Transformers 返回的 `past_key_values`
+- AR-only 单请求 streaming token 输出
 - `ar_text` / `wan_i2v` / `qwen_to_wan_i2v` 三种固定 pipeline
 - 显式 `StageGraph`
 - 顶层 `StageScheduler`
@@ -42,7 +43,7 @@ PipelineConfig / PipelineRegistry
 - stage-level batching
 - 调度层 AR KV cache 管理
 - AR continuous batching
-- 服务端 streaming API
+- 服务端 streaming API / 多请求流式输出通道
 - 多 session 调度
 - pipeline overlap
 - diffusion step execution
@@ -100,7 +101,7 @@ MiniOmniRuntime
 | Paradigm-specific model logic | `ARExecutor` / `DiffusionExecutor`   | 已有                             |
 | Distributed connector         | 暂无                                     | 目前只在进程内传对象             |
 | Stage-level batching          | 暂无                                     | 后续工作                         |
-| AR KV cache / streaming       | request state 持有 `past_key_values`，支持单请求 token streaming | 暂无 KV block manager / continuous batching |
+| AR KV cache / streaming       | request state 持有 Transformers `past_key_values`，支持单请求 token streaming | 暂无 wllm KV block manager / continuous batching |
 | Diffusion step execution      | 暂无                                     | 后续工作                         |
 
 结论：当前架构已经是 **类 vLLM-Omni 的 pipeline runtime 雏形**，但还不是完整 vLLM-Omni。差距主要在配置系统、批处理、KV block 管理、服务端 streaming、分布式 connector 和 diffusion step execution。
@@ -258,10 +259,48 @@ CUDA_VISIBLE_DEVICES=0 python example_wan22_i2v.py \
 - `ar.scheduler_steps` 表示 AR request 被 scheduler 调度的总次数
 - `ar.prefill_steps` 表示 prefill 调度次数
 - `ar.decode_scheduler_steps` 表示 decode step 调度次数
+- `ar.streaming` 表示本次 AR stage 是否通过 streaming API 输出 token delta
 - `ar.kv_cache` 表示 AR backend 是否返回并使用 `past_key_values`
+- `ar.kv_cache_source` 当前为 `transformers_past_key_values`，表示 KV cache 来自 Transformers backend
+- `ar.runtime_kv_manager` 当前为 `False`，表示还没有实现 wllm/vLLM 式 KV block manager
 - `diffusion.load_ms` 表示首次加载 diffusion engine 的耗时
 - `diffusion.elapsed_ms` 表示 diffusion stage 真正执行耗时
 - Wan profiler 里的 `forward.total` 是 Wan 内部请求执行耗时
+
+## AR KV Cache 边界
+
+当前 AR runtime 已经显式拆分为：
+
+```text
+prefill -> decode_step -> finalize
+```
+
+prefill 阶段调用 Transformers CausalLM 时设置 `use_cache=True`，并保存模型返回的 `past_key_values`。decode 阶段每次只输入上一步生成的新 token，并把保存的 `past_key_values` 重新传回模型，从而复用历史 KV。
+
+这说明当前已经完成：
+
+- AR decode 不再是 `model.generate()` 黑盒
+- scheduler / runner / executor 可以看到 prefill 与 decode step
+- 单请求 decode step 可以复用 Transformers 自带 KV cache
+- 单请求 AR streaming 可以逐 step 输出 token delta
+
+但当前还没有完成：
+
+- wllm 自己的 KV block manager
+- paged KV / block table
+- 多请求 decode batching
+- prefix cache / KV 多级缓存
+- 抢占、迁移、换入换出的 KV 调度
+
+所以日志里的：
+
+```text
+ar.kv_cache=True
+ar.kv_cache_source=transformers_past_key_values
+ar.runtime_kv_manager=False
+```
+
+应理解为：当前使用 Transformers backend 自带 KV cache，并把它纳入 wllm AR runtime 状态；不是已经实现了 vLLM 级别的 KV cache 系统。
 
 ## 近期路线
 
@@ -277,13 +316,14 @@ CUDA_VISIBLE_DEVICES=0 python example_wan22_i2v.py \
 - `ARState` 持有 prefill、decode、output、scheduler step 计数
 - decode 阶段复用 `past_key_values`
 - `RequestScheduler -> ModelRunner -> ARExecutor` 能多轮推进同一个 AR request
-- trace 输出 `prefill_ms` / `decode_ms` / `ttft_ms` / `scheduler_steps` / `decode_scheduler_steps` / `kv_cache`
+- trace 输出 `prefill_ms` / `decode_ms` / `ttft_ms` / `scheduler_steps` / `decode_scheduler_steps` / `streaming` / `kv_cache_source` / `runtime_kv_manager`
+- 支持单请求 streaming token 输出
 
 当前边界：
 
-- KV cache 已在 request state 内部推进，但还不是 vLLM 式 block manager
+- KV cache 已在 request state 内部推进，来源是 Transformers `past_key_values`，还不是 vLLM 式 block manager
 - Scheduler 能看到 request 级 prefill/decode step，但还不能做 token-level batch 合并
-- 支持单请求 streaming token 输出
+- Step 1 的合理截止点是 scheduler-visible 单请求 AR runtime，而不是性能极限
 
 ### Step 2: AR KV block 管理与 batching
 

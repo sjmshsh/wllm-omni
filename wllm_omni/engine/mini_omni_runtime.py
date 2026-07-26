@@ -103,6 +103,7 @@ class MiniOmniRuntime:
         if ar_output is None:
             raise RuntimeError("AR streaming finished without final output.")
         metadata = ARStage.metadata_from_output(ar_output)
+        metadata["streaming"] = True
         metadata["elapsed_s"] = perf_counter() - start
         metadata["bridge"] = "direct_request"
         self.last_trace = MiniOmniTrace(

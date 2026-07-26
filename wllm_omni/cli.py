@@ -114,8 +114,11 @@ def _print_mini_omni_trace(trace) -> None:
                 f"ar.decode_scheduler_steps={metadata.get('decode_scheduler_steps')} "
                 f"ar.decode_step_mean_ms={_format_ms(metadata.get('decode_step_mean_ms'))} "
                 f"ar.stop_reason={metadata.get('stop_reason')} "
+                f"ar.streaming={metadata.get('streaming')} "
                 f"ar.kv_cache={metadata.get('kv_cache_enabled')} "
-                f"ar.kv_cache_type={metadata.get('kv_cache_type')}",
+                f"ar.kv_cache_type={metadata.get('kv_cache_type')} "
+                f"ar.kv_cache_source={metadata.get('kv_cache_source')} "
+                f"ar.runtime_kv_manager={metadata.get('runtime_kv_manager')}",
                 flush=True,
             )
         elif stage.name == "diffusion.wan22_i2v":

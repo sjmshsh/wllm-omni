@@ -69,8 +69,12 @@ class ARStage(Stage):
             "decode_step_max_ms": ar_output.metadata.get("decode_step_max_ms"),
             "stopped_by_eos": ar_output.metadata.get("stopped_by_eos"),
             "stop_reason": ar_output.metadata.get("stop_reason"),
+            "streaming": ar_output.metadata.get("streaming", False),
             "kv_cache_enabled": ar_output.metadata.get("kv_cache_enabled"),
             "kv_cache_type": ar_output.metadata.get("kv_cache_type"),
+            "kv_cache_source": ar_output.metadata.get("kv_cache_source"),
+            "kv_cache_backend": ar_output.metadata.get("kv_cache_backend", ar_output.metadata.get("kv_cache_type")),
+            "runtime_kv_manager": ar_output.metadata.get("runtime_kv_manager", False),
         }
 
 
